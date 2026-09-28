@@ -4,12 +4,12 @@ An implementation of the *Interactive Analytical Dashboard Framework* design
 plan: a dashboard treated not as charts linked by filters, but as an
 **explorable graph of analytical contexts**.
 
-* **UI** — PyQt6 (with QtWebEngine hosting the chart surface)
+* **UI** — PyQt5 5.15 (with QtWebEngine hosting the chart surface)
 * **Charts** — Vega-Lite 6, rendered locally (vendored; no network at runtime)
 * **Numbers** — a deterministic pandas engine. Nothing else computes a value.
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -e .
+python3.11 -m venv .venv && .venv/bin/pip install -e .   # Python 3.10 or 3.11
 .venv/bin/explain-beaucoup run models/sales.yaml       # the bundled demo
 ```
 

@@ -6,6 +6,7 @@ file you write: a **semantic model**. This is what setting up looks like.
 
 ```bash
 pip install -e .                                  # or: pip install explain-beaucoup
+#   needs Python 3.10 or 3.11 - PyQt5 5.15.7 has no wheels for 3.12+
 
 explain-beaucoup init  orders.csv --time order_date # 1. propose a model
 $EDITOR orders.yaml                               # 2. fill in what only you know

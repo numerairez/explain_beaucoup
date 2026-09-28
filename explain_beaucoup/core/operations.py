@@ -53,6 +53,25 @@ def _need(params: Mapping[str, Any], key: str, verb: str) -> Any:
     return params[key]
 
 
+def _narrow(model: SemanticModel, ctx: Context,
+            member: Any) -> tuple[dict[str, str], TimeWindow]:
+    """Narrow the scope to the mark the user selected.
+
+    On a dimensional grain the member is a filter. On a *time* grain the member
+    IS a period, so it re-keys the window instead - time lives in `ctx.time`,
+    never in `ctx.filters`. Dropping it would break the whole plotted window
+    down by the new dimension, which is not what clicking one point means.
+    """
+    filters = ctx.filter_map
+    current = ctx.grain[0] if ctx.grain else None
+    if member is None or not current:
+        return filters, ctx.time
+    if current == model.time_column:
+        return filters, TimeWindow.single(str(member), ctx.time.grain)
+    filters[current] = member
+    return filters, ctx.time
+
+
 def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
     """Execute a typed operation, returning a NEW context node.
 
@@ -72,28 +91,23 @@ def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
                 f"'{model.label_of(dim)}' is not the structural child of "
                 f"'{model.label_of(current)}' (expected "
                 f"'{model.label_of(expected)}')")
-        filters = ctx.filter_map
-        if member is not None and current:
-            filters[current] = member
+        filters, window = _narrow(model, ctx, member)
         label = f"Drill to {model.label_of(dim)}"
         if member:
             label = f"Drill into {member} by {model.label_of(dim)}"
         new = ctx.evolve(
             LineageStep(verb, label, tuple(sorted(p.items())), op.source),
-            filters=filters, grain=(dim,))
+            filters=filters, grain=(dim,), time=window)
 
     elif verb == "decompose":
         dim = _need(p, "dimension", verb)
         member = p.get("member")
-        current = ctx.grain[0] if ctx.grain else None
-        filters = ctx.filter_map
-        if member is not None and current and current != model.time_column:
-            filters[current] = member
+        filters, window = _narrow(model, ctx, member)
         scope = f"{member} " if member else ""
         new = ctx.evolve(
             LineageStep(verb, f"Explain {scope}by {model.label_of(dim)}",
                         tuple(sorted(p.items())), op.source),
-            filters=filters, grain=(dim,))
+            filters=filters, grain=(dim,), time=window)
 
     elif verb == "drill_up":
         current = ctx.grain[0] if ctx.grain else None
@@ -131,13 +145,10 @@ def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
     elif verb == "trend":
         n = int(p.get("periods", p.get("months", 12)))
         member = p.get("member")
-        filters = ctx.filter_map
-        current = ctx.grain[0] if ctx.grain else None
-        if member is not None and current and current != model.time_column:
-            filters[current] = member
+        filters, anchor = _narrow(model, ctx, member)
         scope = member or ctx.scope_label()
         grain = p.get("grain", ctx.time.grain)
-        window = ctx.time.at_grain(grain) if grain != ctx.time.grain else ctx.time
+        window = anchor.at_grain(grain) if grain != anchor.grain else anchor
         new = ctx.evolve(
             LineageStep(verb, f"Trend {scope} over {n} {grain}s",
                         tuple(sorted(p.items())), op.source),
@@ -166,11 +177,8 @@ def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
         # These keep the analytical state and change how the node is *read*;
         # the member (if any) narrows scope first.
         member = p.get("member")
-        filters = ctx.filter_map
-        current = ctx.grain[0] if ctx.grain else None
-        if member is not None and current and current != model.time_column:
-            filters[current] = member
-        changes: dict[str, Any] = {"filters": filters}
+        filters, window = _narrow(model, ctx, member)
+        changes: dict[str, Any] = {"filters": filters, "time": window}
         if verb == "change_contribution" and not ctx.comparison:
             changes["comparison"] = "mom"
         new = ctx.evolve(

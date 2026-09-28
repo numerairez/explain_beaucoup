@@ -119,6 +119,27 @@ def test_a_comparison_that_overlaps_its_own_window_is_blocked(model):
     model.validate(dataclasses.replace(trend, comparison="yoy"))
 
 
+def test_selecting_a_point_on_a_time_series_scopes_to_that_period(engine, model):
+    """Clicking one point and breaking it down must narrow the window to that
+    point. A period is not a filter - it re-keys `ctx.time` - so dropping it
+    would break the whole plotted window down by the new dimension."""
+    trend = apply(model, ctx(), Operation.of("trend", periods=12))
+    assert trend.time.length == 12
+
+    out = apply(model, trend,
+                Operation.of("decompose", dimension="channel", member=AUG))
+    assert out.time == TimeWindow.single(AUG)
+    assert out.grain == ("channel",)
+    assert model.time_column not in out.filter_map   # time is never a filter
+
+    only_aug = apply(model, ctx(), Operation.of("decompose", dimension="channel"))
+    assert engine.execute(out).total == engine.execute(only_aug).total
+
+    # With no point selected the window is untouched.
+    whole = apply(model, trend, Operation.of("decompose", dimension="channel"))
+    assert whole.time == trend.time
+
+
 def test_unknown_metric_and_dimension_are_rejected(model):
     with pytest.raises(SemanticError):
         model.validate(ctx(metric="ebitda"))
@@ -298,6 +319,39 @@ def test_specs_build_for_every_kind_and_theme(engine, model, kind, context, them
     assert spec["config"]["background"] == theme.surface
     assert spec["title"]["text"]
     assert "layer" in spec
+
+
+def test_every_point_on_a_time_series_can_be_selected(engine, model):
+    """A mark is only selectable if a right-click resolves a datum carrying its
+    key. On a time series the line is not interactive, the points are size 0
+    until hovered, and the crosshair is transparent - so without an explicit
+    hit target the only selectable mark is whichever decoration happens to be
+    painted (the partial-period ring on the last point), which is why a
+    breakdown used to scope to the whole window for every other period."""
+    res = engine.execute(ctx(grain=("month",),
+                             time=TimeWindow("2025-09", "2026-08")), TIMESERIES)
+    spec = spec_for(model, res, LIGHT)
+    n = len([r for r in res.rows if r.value is not None])
+
+    bands = [l for l in spec["layer"]
+             if l.get("mark", {}).get("type") == "rule"
+             and l["mark"].get("opacity") == 0]
+    assert len(bands) == 1, "expected exactly one transparent hit layer"
+    band = bands[0]
+
+    # Full height: x only, so the rule spans the plot vertically.
+    assert set(band["encoding"]) == {"x", "tooltip"}
+    # Sized off Vega's own width signal - the chart is laid out width=container,
+    # and n-1 because N points leave N-1 gaps between them.
+    assert band["mark"]["strokeWidth"] == {"expr": f"max(6, width / {n - 1})"}
+    # Hover hangs off the hit layer, so the crosshair follows the same geometry
+    # the selection uses - and nothing re-introduces a `nearest` voronoi, whose
+    # cells carry no key and would sit on top of these bands.
+    assert [p["name"] for p in band["params"]] == ["hover"]
+    assert "nearest" not in band["params"][0]["select"]
+    for layer in spec["layer"]:
+        for prm in layer.get("params", []):
+            assert not prm["select"].get("nearest"), "a voronoi would mask the hit bands"
 
 
 def test_a_two_series_chart_carries_a_legend(engine, model):

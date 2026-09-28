@@ -288,8 +288,10 @@ def _timeseries_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
                {"field": "delta_txt", "title": "Change"}]
     if any(d["partial"] for d in data):
         tooltip.append({"field": "partial_txt", "title": "Note"})
+    # Contiguous hit bands (below) make every period the nearest thing to the
+    # pointer within its own band, so the voronoi `nearest` is not needed.
     hover = {"name": "hover", "select": {
-        "type": "point", "on": "pointerover", "nearest": True,
+        "type": "point", "on": "pointerover",
         "fields": ["t"], "clear": "pointerout"}}
 
     axis_format = {"day": "%d %b", "week": "%d %b", "month": "%b %y",
@@ -308,7 +310,6 @@ def _timeseries_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
          "encoding": {"x": x_enc, "y": y_enc}},
         # Crosshair: a rule that follows the nearest point.
         {"mark": {"type": "rule", "color": theme.axis, "strokeWidth": 1},
-         "params": [hover],
          "encoding": {
              "x": x_enc,
              "opacity": {"condition": {"param": "hover", "empty": False, "value": 1},
@@ -331,6 +332,27 @@ def _timeseries_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
          "mark": {"type": "text", "align": "right", "dy": -14, "dx": -2,
                   "color": theme.ink, "fontSize": 11.5, "fontWeight": 600},
          "encoding": {"x": x_enc, "y": y_enc, "text": {"field": "value_txt"}}},
+        # A transparent, full-height hit band per period. Without it a mark
+        # selection cannot name the period the user clicked: `nearest: True`
+        # used to make Vega-Lite generate a voronoi that covered the plot and
+        # sat on top, but a voronoi cell's datum carries only the field the
+        # nearest-match needs ("t") - no `key` - so the page emitted an empty
+        # mark and the period was lost. The one exception was whichever point
+        # also carried a painted, always-sized decoration (the partial-period
+        # ring on the last period), which is why a breakdown used to work on
+        # the latest date and nowhere else. Hover hangs off this layer too, so
+        # the crosshair follows the same geometry the selection uses.
+        # Sized from Vega's `width` signal rather than the Python width: the
+        # chart is laid out with width="container", so only Vega knows how wide
+        # the plot really is, and the bands must still tile after a resize.
+        # n-1, not n: the first and last points sit ON the axis ends, so N
+        # points leave N-1 gaps between them - dividing by n leaves a dead
+        # stripe between every pair of bands.
+        {"mark": {"type": "rule", "color": theme.series[0], "opacity": 0,
+                  "strokeWidth": {"expr":
+                      f"max(6, width / {max(len(data) - 1, 1)})"}},
+         "params": [hover],
+         "encoding": {"x": x_enc, "tooltip": tooltip}},
     ]
     return {"data": {"values": data}, "layer": layers,
             "width": width, "height": height}

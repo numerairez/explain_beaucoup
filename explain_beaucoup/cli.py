@@ -147,7 +147,18 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def launch(model_path: Path) -> int:
-    from PyQt6.QtWidgets import QApplication
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    # Qt5 requires both of these before the QApplication exists: WebEngine
+    # needs a shared GL context, and high-DPI scaling is opt-in here (Qt6
+    # turns it on unconditionally).
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+
+    # Importing the WebEngine module must also happen pre-QApplication on Qt5.
+    import PyQt5.QtWebEngineWidgets  # noqa: F401
 
     from .semantic.loader import ModelError, load_model_file
     from .ui.main_window import MainWindow
@@ -162,7 +173,7 @@ def launch(model_path: Path) -> int:
     app.setApplicationName(loaded.model.title or "Explain Beaucoup")
     window = MainWindow(loaded.source, loaded.model)
     window.show()
-    return app.exec()
+    return app.exec_()
 
 
 def _relative(target: Path, start: Path) -> str:

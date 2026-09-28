@@ -11,11 +11,12 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QLabel,
-                             QMainWindow, QMenu, QMessageBox, QTabWidget,
-                             QTextBrowser, QToolBar, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QPoint, Qt
+from PyQt5.QtGui import QKeySequence
+from PyQt5.QtWidgets import (QAction, QComboBox, QDockWidget, QFileDialog,
+                             QLabel, QMainWindow, QMenu, QMessageBox,
+                             QTabWidget, QTextBrowser, QToolBar,
+                             QVBoxLayout, QWidget)
 
 from ..core import timegrain as tg
 from ..core.context import Context, TimeWindow
@@ -299,7 +300,7 @@ class MainWindow(QMainWindow):
                 lambda _=False, d=dim: self.run_op(
                     "decompose", {"dimension": d}, member=self.selected_key,
                     branch=True, source="branch"))
-        menu.exec(self.mapToGlobal(QPoint(self.width() // 2, 120)))
+        menu.exec_(self.mapToGlobal(QPoint(self.width() // 2, 120)))
 
     def pin_here(self) -> None:
         node = self.node
@@ -461,7 +462,7 @@ class MainWindow(QMainWindow):
 
         pos = self.chart.mapToGlobal(QPoint(int(payload.get("x", 0)),
                                             int(payload.get("y", 0))))
-        menu.exec(pos)
+        menu.exec_(pos)
 
     # ------------------------------------------------------------------
     # toolbar handlers

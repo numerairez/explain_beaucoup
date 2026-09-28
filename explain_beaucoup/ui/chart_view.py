@@ -11,11 +11,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QFile, QIODevice, QObject, QUrl, pyqtSignal, pyqtSlot
-from PyQt6.QtWebChannel import QWebChannel
-from PyQt6.QtWebEngineCore import (QWebEngineScript, QWebEngineSettings)
-from PyQt6.QtWebEngineWidgets import QWebEngineView
-from PyQt6.QtWidgets import QVBoxLayout, QWidget
+from PyQt5.QtCore import QFile, QIODevice, QObject, QUrl, pyqtSignal, pyqtSlot
+from PyQt5.QtWebChannel import QWebChannel
+from PyQt5.QtWebEngineWidgets import (QWebEngineScript, QWebEngineSettings,
+                                      QWebEngineView)
+from PyQt5.QtWidgets import QVBoxLayout, QWidget
 
 WEB_DIR = Path(__file__).parent / "web"
 PAGE = WEB_DIR / "chart.html"
@@ -72,7 +72,7 @@ class ChartView(QWidget):
 
         self.web = QWebEngineView(self)
         # The analytical framework owns the context menu, not the browser.
-        from PyQt6.QtCore import Qt
+        from PyQt5.QtCore import Qt
         self.web.setContextMenuPolicy(Qt.ContextMenuPolicy.NoContextMenu)
 
         page = self.web.page()

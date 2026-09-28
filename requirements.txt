@@ -1,5 +1,9 @@
-PyQt6>=6.9
-PyQt6-WebEngine>=6.9
+# PyQt5 5.15.7 is the office baseline and the version this code targets.
+# macOS on Apple Silicon has no arm64 wheel below 5.15.11 (5.15.7 is an
+# sdist there and needs qmake to build), so this is a range, not a pin.
+# Any 5.15.x satisfies the API this code uses.
+PyQt5>=5.15.7,<5.16
+PyQtWebEngine>=5.15.6,<5.16
 pandas>=2.2
 PyYAML>=6.0
 # optional: pyarrow (parquet/feather), openpyxl (excel), pytest (tests)
