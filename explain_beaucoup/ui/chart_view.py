@@ -1,8 +1,9 @@
 """The Qt <-> Vega seam.
 
-QWebEngineView hosts the Vega renderer; a QWebChannel carries structured mark
-selections back into Python. Vega renders and emits; it never decides what an
-interaction means.
+One QWebEngineView hosts a *stack* of charts: the node in focus on top, the
+views drilled out of it underneath. A QWebChannel carries structured mark
+selections, and the panel-chrome actions, back into Python. Vega renders and
+emits; it never decides what an interaction means.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ class Bridge(QObject):
     selected = pyqtSignal(dict)
     menu_requested = pyqtSignal(dict)
     activated = pyqtSignal(dict)
+    panel_action = pyqtSignal(dict)
     page_ready = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -47,6 +49,10 @@ class Bridge(QObject):
         self.activated.emit(json.loads(payload))
 
     @pyqtSlot(str)
+    def panel_action_requested(self, payload: str) -> None:
+        self.panel_action.emit(json.loads(payload))
+
+    @pyqtSlot(str)
     def report_error(self, message: str) -> None:
         self.error.emit(message)
 
@@ -62,12 +68,17 @@ def _qwebchannel_js() -> str:
 
 
 class ChartView(QWidget):
-    """The chart surface. Renders a Vega-Lite spec and reports selections."""
+    """The chart surface: a vertical stack of chart panels.
+
+    The node in focus renders full size on top; the views drilled out of it
+    render compact underneath, so a drill-down *adds* a chart rather than
+    replacing the one it came from.
+    """
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.bridge = Bridge(self)
-        self._pending: tuple[dict[str, Any], str, str, str] | None = None
+        self._pending: dict[str, Any] | None = None
         self._ready = False
 
         self.web = QWebEngineView(self)
@@ -78,7 +89,9 @@ class ChartView(QWidget):
         page = self.web.page()
         s = page.settings()
         s.setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
-        s.setAttribute(QWebEngineSettings.WebAttribute.ShowScrollBars, False)
+        # The stack genuinely scrolls once a few charts are open, so the
+        # scrollbar is a needed affordance rather than chrome.
+        s.setAttribute(QWebEngineSettings.WebAttribute.ShowScrollBars, True)
         s.setAttribute(QWebEngineSettings.WebAttribute.FocusOnNavigationEnabled, False)
 
         src = _qwebchannel_js()
@@ -107,18 +120,23 @@ class ChartView(QWidget):
 
     def _on_ready(self) -> None:
         self._ready = True
-        if self._pending:
-            self.render_spec(*self._pending)
-            self._pending = None
+        if self._pending is not None:
+            payload, self._pending = self._pending, None
+            self.render_stack(payload)
 
-    def render_spec(self, spec: dict[str, Any], view_id: str,
-                    context_id: str, theme: str) -> None:
+    def render_stack(self, payload: dict[str, Any]) -> None:
+        """Render the whole stack.
+
+        `payload` is {"theme": str, "scroll_to": uid|None, "panels": [panel]},
+        where a panel is {"uid", "context_id", "role", "title", "subtitle",
+        "badge", "active", "actions": [{"action", "label", "hint", "primary"}],
+        "spec"}.  The page reuses the Vega view of any panel whose spec has
+        not changed, so re-rendering the stack does not rebuild every chart.
+        """
         if not self._ready:
-            self._pending = (spec, view_id, context_id, theme)
+            self._pending = payload
             return
-        js = (f"window.renderSpec({json.dumps(json.dumps(spec))}, "
-              f"{json.dumps(view_id)}, {json.dumps(context_id)}, "
-              f"{json.dumps(theme)});")
+        js = f"window.renderStack({json.dumps(json.dumps(payload))});"
         self.web.page().runJavaScript(js)
 
     def set_page_theme(self, theme: str) -> None:

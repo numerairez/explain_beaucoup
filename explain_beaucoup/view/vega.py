@@ -21,6 +21,14 @@ FONT = "system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif"
 MAX_BARS = 18
 LABEL_LIMIT = 14          # direct-label only while the labels can breathe
 
+# A child panel in the chart stack is a glance, not a study, and two of them
+# share a row: fewer categories, shorter bands, no in-chart title (the panel
+# header already carries it).
+COMPACT_ROWS = 6
+COMPACT_HEIGHT = 150
+COMPACT_STEP = 18
+CATEGORICAL = (BREAKDOWN, CHANGE, EXCEPTIONS)
+
 
 # --------------------------------------------------------------------------
 
@@ -119,11 +127,17 @@ def _titles(model: SemanticModel, res: ResultHandle) -> tuple[str, str]:
     return head, "  ·  ".join(bits)
 
 
+def titles_for(model: SemanticModel, res: ResultHandle) -> tuple[str, str]:
+    """The headline and subtitle of a view, for chrome that renders them
+    outside the plot (the stack's panel headers)."""
+    return _titles(model, res)
+
+
 # --------------------------------------------------------------------------
 
 def spec_for(model: SemanticModel, res: ResultHandle, theme: Theme, *,
              selected: str | None = None, width: int = 720,
-             height: int = 380) -> dict[str, Any]:
+             height: int = 380, compact: bool = False) -> dict[str, Any]:
     builders = {
         TIMESERIES: _timeseries_spec,
         CHANGE: _change_spec,
@@ -131,10 +145,25 @@ def spec_for(model: SemanticModel, res: ResultHandle, theme: Theme, *,
         DISTRIBUTION: _distribution_spec,
     }
     build = builders.get(res.kind, _breakdown_spec)
-    spec = build(model, res, theme, selected, width, height)
+    spec = build(model, res, theme, selected,
+                 width, COMPACT_HEIGHT if compact else height)
     head, sub = _titles(model, res)
-    spec["title"] = {"text": head, "subtitle": sub}
+    if compact:
+        _shrink(spec, truncate=res.kind in CATEGORICAL)
+    else:
+        spec["title"] = {"text": head, "subtitle": sub}
     spec["config"] = config(theme)
+    if compact:
+        # A child panel is read at a glance: no axis titles (the header says
+        # what the metric is), tighter type, less padding.
+        spec["config"]["padding"] = {"left": 6, "top": 2, "right": 18,
+                                     "bottom": 2}
+        spec["config"]["axis"]["title"] = None
+        spec["config"]["axis"]["labelFontSize"] = 10.5
+        spec["config"]["axis"]["titlePadding"] = 4
+        spec["config"]["legend"]["symbolSize"] = 70
+        spec["config"]["legend"]["labelFontSize"] = 10.5
+        spec["config"]["legend"]["offset"] = 2
     spec["$schema"] = "https://vega.github.io/schema/vega-lite/v6.json"
     if not isinstance(spec.get("height"), dict):
         # Only continuous heights can be fitted; a band `step` height sizes
@@ -144,6 +173,76 @@ def spec_for(model: SemanticModel, res: ResultHandle, theme: Theme, *,
     # than baking in a pixel width.
     spec["width"] = "container"
     return spec
+
+
+def _data_keys(spec: dict[str, Any], limit: int) -> list[Any]:
+    """The first `limit` distinct mark keys, in the order the builder sorted
+    them - the categories a compact panel keeps."""
+    for values in _value_lists(spec):
+        keys: list[Any] = []
+        for row in values:
+            k = row.get("key")
+            if k is not None and k not in keys:
+                keys.append(k)
+            if len(keys) >= limit:
+                break
+        if keys:
+            return keys
+    return []
+
+
+def _value_lists(spec: Any) -> list[list[dict[str, Any]]]:
+    out: list[list[dict[str, Any]]] = []
+    if isinstance(spec, dict):
+        data = spec.get("data")
+        if isinstance(data, dict) and isinstance(data.get("values"), list):
+            out.append(data["values"])
+        for value in spec.values():
+            out += _value_lists(value)
+    elif isinstance(spec, list):
+        for item in spec:
+            out += _value_lists(item)
+    return out
+
+
+def _shrink(spec: dict[str, Any], *, truncate: bool) -> None:
+    """Fit a built spec into a child panel, in place.
+
+    Categorical charts keep only their leading categories; a time series or a
+    distribution keeps every point, since dropping some would misread the
+    shape. Band heights and fitted heights both come down.
+    """
+    keys = _data_keys(spec, COMPACT_ROWS) if truncate else []
+    _shrink_node(spec, keys)
+
+
+def _shrink_node(node: Any, keys: list[Any]) -> None:
+    if isinstance(node, list):
+        for item in node:
+            _shrink_node(item, keys)
+        return
+    if not isinstance(node, dict):
+        return
+
+    data = node.get("data")
+    if keys and isinstance(data, dict) and isinstance(data.get("values"), list):
+        data["values"] = [r for r in data["values"] if r.get("key") in keys]
+
+    # An encoding's own axis title overrides config.axis.title, so strip it
+    # here too: the panel header already names the metric.
+    axis = node.get("axis")
+    if isinstance(axis, dict) and axis.get("title") is not None:
+        node["axis"] = {**axis, "title": None}
+
+    height = node.get("height")
+    if isinstance(height, dict) and isinstance(height.get("step"), (int, float)):
+        node["height"] = {**height, "step": min(height["step"], COMPACT_STEP)}
+    elif isinstance(height, (int, float)):
+        node["height"] = min(height, COMPACT_HEIGHT)
+
+    for key, value in node.items():
+        if key != "data":
+            _shrink_node(value, keys)
 
 
 # -- breakdown -------------------------------------------------------------

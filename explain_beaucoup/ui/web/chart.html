@@ -6,55 +6,106 @@
 <script src="vendor/vega-embed.min.js"></script>
 <style>
   :root { color-scheme: light; --surface: #fcfcfb; --plane: #f9f9f7;
-          --ink: #0b0b0b; --ink2: #52514e; --border: rgba(11,11,11,0.10); }
+          --ink: #0b0b0b; --ink2: #52514e; --border: rgba(11,11,11,0.10);
+          --chip: rgba(11,11,11,0.05);
+          --accent: #2f6f4f; }
   body[data-theme="dark"] { color-scheme: dark; --surface: #1a1a19;
           --plane: #0d0d0d; --ink: #ffffff; --ink2: #c3c2b7;
-          --border: rgba(255,255,255,0.10); }
+          --border: rgba(255,255,255,0.10);
+          --chip: rgba(255,255,255,0.07); --accent: #8fd0ad; }
   html, body { height: 100%; }
   body {
     margin: 0; background: var(--plane); color: var(--ink);
     font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
     -webkit-user-select: none; user-select: none; overflow-x: hidden;
   }
-  #card {
+  #stack { padding: 10px 10px 28px; box-sizing: border-box; }
+
+  .panel {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 10px; margin: 10px; padding: 12px 14px 14px;
-    box-sizing: border-box; width: calc(100% - 20px);
+    border-radius: 10px; padding: 10px 14px 12px; box-sizing: border-box;
+    margin: 0 0 10px; position: relative;
   }
-  #chart { width: 100%; }
-  #empty { color: var(--ink2); padding: 40px 8px; text-align: center; }
+  .panel[data-active="1"] { border-color: var(--accent); }
+  .panel[data-role="child"] { margin: 0; padding: 9px 12px 10px; }
+
+  /* The children sit two up, so a mother's drills read as one set. */
+  #kids {
+    display: grid; gap: 10px; align-items: start;   /* each card hugs its own
+                                                       chart, no stretching */
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  }
+  #kids-head {
+    display: flex; align-items: baseline; gap: 8px;
+    margin: 16px 2px 8px; padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  #kids-head .h {
+    font-size: 11.5px; font-weight: 600; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--ink2);
+  }
+  #kids-head .note { font-size: 11.5px; color: var(--ink2); opacity: 0.8; }
+
+  .phead { display: flex; align-items: flex-start; gap: 10px; }
+  .ptext { flex: 1; min-width: 0; }
+  .ptitle { font-size: 12.5px; font-weight: 600; letter-spacing: -0.01em;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel[data-role="focus"] .ptitle { font-size: 15px; }
+  .psub { color: var(--ink2); font-size: 11px; margin-top: 2px;
+          white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .panel[data-role="focus"] .psub { font-size: 11.5px; }
+  .pacts { display: flex; gap: 6px; flex: none; }
+  button {
+    font: inherit; font-size: 11px; color: var(--ink2); cursor: pointer;
+    background: var(--chip); border: 1px solid transparent; border-radius: 6px;
+    padding: 3px 8px; white-space: nowrap;
+  }
+  .panel[data-role="focus"] button { font-size: 11.5px; padding: 3px 9px; }
+  button:hover { color: var(--ink); border-color: var(--border); }
+  button.primary { color: var(--accent); font-weight: 600; }
+  .badge {
+    font-size: 11px; color: var(--ink2); background: var(--chip);
+    border-radius: 5px; padding: 2px 7px; align-self: center; flex: none;
+  }
+  .pbody { margin-top: 8px; }
+  .pchart { width: 100%; }
+  .pempty { color: var(--ink2); padding: 26px 8px; text-align: center;
+            font-size: 12px; }
+  .panel[data-role="focus"] .pempty { padding: 40px 8px; }
   /* The framework owns the context menu; Vega's own actions menu is off. */
-  .vega-embed summary { display: none; }
-  .vega-embed .vega-actions { display: none; }
+  .vega-embed summary, .vega-embed .vega-actions { display: none; }
+
   #hint {
-    color: var(--ink2); font-size: 11.5px; margin: 10px 2px 0;
-    padding-top: 9px; border-top: 1px solid var(--border);
+    color: var(--ink2); font-size: 11.5px; margin: 2px 4px 0; padding: 0 2px;
   }
-  kbd {
-    font: inherit; border: 1px solid var(--border); border-radius: 4px;
-    padding: 0 4px; background: var(--plane);
-  }
+  #placeholder { color: var(--ink2); padding: 60px 8px; text-align: center; }
 </style>
 
-<div id="card">
-  <div id="chart"></div>
-  <div id="empty" hidden>No data in this analytical scope.</div>
-  <div id="hint">Click a mark to select it &middot; right-click for the
-    analytical grammar available here</div>
+<div id="stack">
+  <div id="focus"></div>
+  <div id="kids-head" hidden>
+    <span class="h">Children charts</span>
+    <span class="note"></span>
+  </div>
+  <div id="kids"></div>
 </div>
+<div id="hint">Click a mark to select &middot; right-click for the analytical
+  grammar &middot; double-click to drill — the result opens as a chart
+  <em>below</em> this one, not over it</div>
 
 <script>
 let bridge = null;
-let view = null;
-let currentViewId = "";
-let currentContextId = "";
+let theme = "light";
+const panels = new Map();        // uid -> {el, chartEl, emptyEl, specJson, view}
 
 new QWebChannel(qt.webChannelTransport, (channel) => {
   bridge = channel.objects.bridge;
   if (bridge && bridge.ready) bridge.ready();
 });
 
-function payloadFor(item, gesture, ev) {
+// -- payloads --------------------------------------------------------------
+
+function payloadFor(uid, contextId, item, gesture, ev) {
   // The structured selection the design plan asks a mark to emit.
   const datum = item && item.datum ? item.datum : {};
   const mark = {};
@@ -63,8 +114,8 @@ function payloadFor(item, gesture, ev) {
     if (datum[k] !== undefined) mark[k] = datum[k];
   }
   return JSON.stringify({
-    view_id: currentViewId,
-    context_id: currentContextId,
+    view_id: uid,
+    context_id: contextId || "",
     gesture: gesture,
     mark: mark,
     x: ev ? Math.round(ev.clientX) : 0,
@@ -76,41 +127,151 @@ function hasKey(item) {
   return !!(item && item.datum && item.datum.key !== undefined);
 }
 
-window.renderSpec = function (specJson, viewId, contextId, theme) {
-  const spec = JSON.parse(specJson);
-  currentViewId = viewId || "";
-  currentContextId = contextId || "";
-  document.body.dataset.theme = theme || "light";
+// -- panel construction ----------------------------------------------------
 
-  const chartEl = document.getElementById("chart");
-  const emptyEl = document.getElementById("empty");
-  const rows = countRows(spec);
-  emptyEl.hidden = rows !== 0;
-  chartEl.hidden = rows === 0;
-  if (rows === 0) { return; }
+function createPanel(p) {
+  const el = document.createElement("section");
+  el.className = "panel";
+  el.dataset.uid = p.uid;
+  el.innerHTML =
+    '<div class="phead">' +
+      '<div class="ptext"><div class="ptitle"></div><div class="psub"></div></div>' +
+      '<div class="badge" hidden></div>' +
+      '<div class="pacts"></div>' +
+    '</div>' +
+    '<div class="pbody"><div class="pchart"></div>' +
+    '<div class="pempty" hidden>No data in this analytical scope.</div></div>';
 
-  vegaEmbed("#chart", spec, {
-    actions: false, renderer: "svg", tooltip: { theme: theme || "light" },
+  const rec = {
+    el: el,
+    chartEl: el.querySelector(".pchart"),
+    emptyEl: el.querySelector(".pempty"),
+    titleEl: el.querySelector(".ptitle"),
+    subEl: el.querySelector(".psub"),
+    badgeEl: el.querySelector(".badge"),
+    actsEl: el.querySelector(".pacts"),
+    specJson: "",
+    theme: "",
+    view: null,
+    contextId: p.context_id || "",
+  };
+
+  el.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    if (!bridge) return;
+    if (ev.target.closest("svg")) return;   // handled by the Vega listener
+    if (ev.target.closest("button")) return;
+    bridge.mark_menu(payloadFor(p.uid, rec.contextId, null, "contextmenu", ev));
+  });
+  el.addEventListener("click", (ev) => {
+    const btn = ev.target.closest("button");
+    if (!btn || !bridge) return;
+    bridge.panel_action_requested(JSON.stringify({action: btn.dataset.action, uid: p.uid}));
+  });
+  return rec;
+}
+
+function updateHeader(rec, p) {
+  rec.contextId = p.context_id || "";
+  rec.el.dataset.role = p.role;
+  rec.el.dataset.active = p.active ? "1" : "0";
+  rec.titleEl.textContent = p.title || "";
+  rec.subEl.textContent = p.subtitle || "";
+  rec.subEl.hidden = !p.subtitle;
+  rec.badgeEl.hidden = !p.badge;
+  rec.badgeEl.textContent = p.badge || "";
+
+  const acts = (p.actions || []).map((a) =>
+    '<button data-action="' + a.action + '"' +
+    (a.primary ? ' class="primary"' : '') +
+    (a.hint ? ' title="' + a.hint.replace(/"/g, "&quot;") + '"' : '') +
+    '>' + a.label + '</button>').join("");
+  if (rec.actsEl.innerHTML !== acts) rec.actsEl.innerHTML = acts;
+}
+
+function embed(rec, p) {
+  const specJson = JSON.stringify(p.spec);
+  if (specJson === rec.specJson && theme === rec.theme) return Promise.resolve();
+  rec.specJson = specJson;
+  rec.theme = theme;
+
+  const rows = countRows(p.spec);
+  rec.emptyEl.hidden = rows !== 0;
+  rec.chartEl.hidden = rows === 0;
+  if (rows === 0) {
+    if (rec.view) { rec.view.finalize(); rec.view = null; }
+    rec.chartEl.innerHTML = "";
+    return Promise.resolve();
+  }
+
+  return vegaEmbed(rec.chartEl, p.spec, {
+    actions: false, renderer: "svg", tooltip: { theme: theme },
   }).then((res) => {
-    view = res.view;
-    view.addEventListener("click", (ev, item) => {
+    rec.view = res.view;
+    res.view.addEventListener("click", (ev, item) => {
       if (!bridge || !hasKey(item)) return;
-      bridge.mark_selected(payloadFor(item, "click", ev));
+      bridge.mark_selected(payloadFor(p.uid, rec.contextId, item, "click", ev));
     });
-    view.addEventListener("contextmenu", (ev, item) => {
+    res.view.addEventListener("contextmenu", (ev, item) => {
       ev.preventDefault();
       if (!bridge) return;
-      bridge.mark_menu(payloadFor(item, "contextmenu", ev));
+      bridge.mark_menu(payloadFor(p.uid, rec.contextId, item, "contextmenu", ev));
     });
-    view.addEventListener("dblclick", (ev, item) => {
+    res.view.addEventListener("dblclick", (ev, item) => {
       if (!bridge || !hasKey(item)) return;
-      bridge.mark_activated(payloadFor(item, "dblclick", ev));
+      bridge.mark_activated(payloadFor(p.uid, rec.contextId, item, "dblclick", ev));
     });
   }).catch((err) => {
-    emptyEl.hidden = false;
-    emptyEl.textContent = "Chart error: " + err;
+    rec.emptyEl.hidden = false;
+    rec.emptyEl.textContent = "Chart error: " + err;
     if (bridge) bridge.report_error(String(err));
   });
+}
+
+// -- the stack -------------------------------------------------------------
+
+window.renderStack = function (payloadJson) {
+  const payload = JSON.parse(payloadJson);
+  theme = payload.theme || "light";
+  document.body.dataset.theme = theme;
+
+  const focusEl = document.getElementById("focus");
+  const kidsEl = document.getElementById("kids");
+  const headEl = document.getElementById("kids-head");
+  const keep = new Set(payload.panels.map((p) => p.uid));
+  for (const [uid, rec] of Array.from(panels)) {
+    if (keep.has(uid)) continue;
+    if (rec.view) rec.view.finalize();
+    rec.el.remove();
+    panels.delete(uid);
+  }
+
+  const fresh = [];
+  payload.panels.forEach((p) => {
+    let rec = panels.get(p.uid);
+    if (!rec) { rec = createPanel(p); panels.set(p.uid, rec); fresh.push(p.uid); }
+    updateHeader(rec, p);
+    // appendChild re-orders an existing panel without rebuilding its view.
+    (p.role === "focus" ? focusEl : kidsEl).appendChild(rec.el);
+    embed(rec, p);
+  });
+
+  const kids = payload.panels.length - 1;
+  headEl.hidden = kids <= 0;
+  headEl.querySelector(".note").textContent = kids
+    ? kids + (kids === 1 ? " view" : " views") +
+      " drilled out of the chart above · raise one to drill further"
+    : "";
+
+  const target = payload.scroll_to;
+  if (target && panels.has(target)) {
+    const rec = panels.get(target);
+    // Let the embed lay out before scrolling to it.
+    window.setTimeout(() => {
+      rec.el.scrollIntoView({behavior: fresh.length ? "smooth" : "auto",
+                             block: "nearest"});
+    }, 60);
+  }
 };
 
 function countRows(spec) {
@@ -124,16 +285,5 @@ function countRows(spec) {
   return -1;   // unknown - render anyway
 }
 
-// Right-click anywhere on the surface (not just on a mark) still offers the
-// grammar for the current node.
-document.addEventListener("contextmenu", (ev) => {
-  ev.preventDefault();
-  if (!bridge) return;
-  if (ev.target.closest("svg")) return;   // handled by the Vega listener
-  bridge.mark_menu(JSON.stringify({
-    view_id: currentViewId, context_id: currentContextId,
-    gesture: "contextmenu", mark: {},
-    x: Math.round(ev.clientX), y: Math.round(ev.clientY),
-  }));
-});
+document.addEventListener("contextmenu", (ev) => ev.preventDefault());
 </script>

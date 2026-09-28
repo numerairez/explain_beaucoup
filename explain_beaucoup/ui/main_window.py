@@ -4,6 +4,11 @@ Event loop (design plan section 9):
     select mark -> emit structured selection -> resolve Context
     -> advertise valid operations -> execute deterministic operation
     -> add graph node -> render the resulting view
+
+The chart surface is a *stack*, not a slot. The node in focus renders full
+size on top; the views drilled out of it render compact underneath, so a
+drill-down never destroys the chart it came from. Raising a child moves it to
+the top, where it in turn spawns its own children.
 """
 
 from __future__ import annotations
@@ -31,7 +36,7 @@ from ..engine.narrate import (narrate_explanation, narrate_investigation,
 from ..semantic.specs import SemanticError, SemanticModel
 from ..view import format as fmt
 from ..view.theme import THEMES, Theme
-from ..view.vega import spec_for
+from ..view.vega import spec_for, titles_for
 from .chart_view import ChartView
 from .panels import (BreadcrumbBar, ContextInspector, ExplainPanel,
                      InvestigationTree, PinsPanel, QuestionsPanel)
@@ -42,6 +47,9 @@ MEMBER_VERBS = {"drill_down", "decompose", "trend", "contribution",
                 "change_contribution", "exceptions", "distribution", "focus"}
 # Verbs that re-read the same node rather than changing its family of result.
 PRESERVE_KIND = {"compare", "switch_metric", "set_time", "clear_comparison"}
+# Verbs that re-frame the view in place instead of narrowing it. These replace
+# the chart on top of the stack; everything else opens a chart below it.
+IN_PLACE = PRESERVE_KIND | {"drill_up", "set_grain"}
 GROUP_ORDER = ["Explain", "Composition", "Change", "Trend", "Exception",
                "Distribution", "Metric"]
 LENSES = {
@@ -64,7 +72,8 @@ class MainWindow(QMainWindow):
         self.engine = AnalyticalEngine(data, model)
         self.graph = InvestigationGraph()
         self.theme_name = "light"
-        self.selected_key: str | None = None
+        # One selected mark per node: a child panel keeps its own selection.
+        self._sel: dict[str, str | None] = {}
         self._syncing = False
 
         title = model.title or model.dataset.replace("_", " ").title()
@@ -98,9 +107,20 @@ class MainWindow(QMainWindow):
 
     @property
     def node(self) -> Node:
+        """The node in focus - the chart on top of the stack. Every operation
+        applies to it; acting on a chart below raises that one first."""
         n = self.graph.current_node
         assert n is not None
         return n
+
+    @property
+    def selected_key(self) -> str | None:
+        return self._sel.get(self.graph.current or "")
+
+    @selected_key.setter
+    def selected_key(self, key: str | None) -> None:
+        if self.graph.current:
+            self._sel[self.graph.current] = key
 
     def _build_chrome(self) -> None:
         self._grain: str = self.model.time_grain
@@ -169,6 +189,7 @@ class MainWindow(QMainWindow):
         self.chart.bridge.selected.connect(self._on_mark_selected)
         self.chart.bridge.menu_requested.connect(self._on_mark_menu)
         self.chart.bridge.activated.connect(self._on_mark_activated)
+        self.chart.bridge.panel_action.connect(self._on_panel_action)
         self.chart.bridge.error.connect(
             lambda msg: self.statusBar().showMessage(f"Chart error: {msg}", 8000))
         box.addWidget(self.chart, 1)
@@ -223,38 +244,126 @@ class MainWindow(QMainWindow):
 
     def navigate(self, ctx: Context, kind: str = BREAKDOWN, *,
                  op: Operation | None = None, parent: str | None = "__current__",
-                 branch: bool = False, title: str = "") -> None:
+                 branch: bool = False, title: str = "",
+                 in_place: bool = False) -> None:
+        """Run an operation and put its result on the stack.
+
+        By default the result opens *below* the node it came from, which keeps
+        the mother chart on top and its children visible beside each other.
+        `in_place` is for operations that re-frame the same scope (a different
+        metric, period or comparison): those replace the chart on top.
+        """
         try:
             res = self.engine.execute(ctx, kind)
         except SemanticError as exc:
             self._blocked(str(exc))
             return
         parent_uid = self.graph.current if parent == "__current__" else parent
-        if branch and parent_uid:
+        existing = None if branch else self._existing_child(parent_uid, ctx, kind)
+        if existing is not None:
+            node = existing                       # already on the stack
+        elif branch and parent_uid:
             node = self.graph.branch_from(parent_uid, ctx, kind=kind, op=op,
                                           title=title)
         else:
             node = self.graph.add(ctx, kind=kind, op=op, parent=parent_uid,
                                   title=title or self._node_title(ctx, kind))
-        self.selected_key = (op.param_map.get("member") if op else None)
-        self._render(node, res)
+        member = op.param_map.get("member") if op else None
+        self._sel[node.uid] = member
+
+        if in_place or node.parent != parent_uid or parent_uid is None:
+            self.graph.current = node.uid
+            self._render(node, res, scroll_to=node.uid)
+            return
+
+        # The mother keeps the top slot; the new view opens under it.
+        self.graph.current = parent_uid
+        if member:
+            self._sel[parent_uid] = member        # mark the drilled-from bar
+        mother = self.graph.get(parent_uid)
+        try:
+            mother_res = self.engine.execute(mother.context, mother.kind)
+        except SemanticError as exc:              # pragma: no cover
+            self._blocked(str(exc))
+            return
+        self._render(mother, mother_res, scroll_to=node.uid)
+        verb = op.verb.replace("_", " ") if op else "view"
+        self.statusBar().showMessage(
+            f"{'Already open' if existing is not None else 'Opened'} below: "
+            f"{node.title}   ·   raise it to the top to drill further "
+            f"({verb})", 6000)
+
+    def _existing_child(self, parent_uid: str | None, ctx: Context,
+                        kind: str) -> Node | None:
+        """The same drill twice should scroll to the chart, not stack a copy."""
+        if not parent_uid or parent_uid not in self.graph.nodes:
+            return None
+        for child in self.graph.child_nodes(parent_uid):
+            if child.context.id == ctx.id and child.kind == kind:
+                return child
+        return None
 
     def goto_node(self, uid: str) -> None:
+        """Raise a node to the top of the stack."""
+        if uid not in self.graph.nodes:
+            return
         node = self.graph.goto(uid)
         try:
             res = self.engine.execute(node.context, node.kind)
         except SemanticError as exc:
             self._blocked(str(exc))
             return
-        self.selected_key = None
-        self._render(node, res)
+        self._render(node, res, scroll_to=uid)
+
+    def raise_node(self, uid: str) -> None:
+        if uid == self.graph.current:
+            return
+        node = self.graph.nodes.get(uid)
+        if node is None:
+            return
+        self.goto_node(uid)
+        n = len(node.children)
+        deeper = f"   ·   {n} view{'s' if n != 1 else ''} already below it" if n else ""
+        self.statusBar().showMessage(
+            f"Raised: {node.title}   ·   drills from here open beneath it{deeper}",
+            6000)
+
+    def close_node(self, uid: str) -> None:
+        """Take a chart - and anything drilled out of it - off the stack."""
+        node = self.graph.nodes.get(uid)
+        if node is None or node.uid == self.graph.current:
+            return
+        title = node.title
+        gone = self.graph.remove(uid)
+        for dead in gone:
+            self._sel.pop(dead, None)
+        buried = len(gone) - 1
+        self.goto_node(self.graph.current or "")
+        self.statusBar().showMessage(
+            f"Closed: {title}" + (f" and {buried} view{'s' if buried != 1 else ''} "
+                                  "below it" if buried else ""), 5000)
 
     def go_back(self) -> None:
         node = self.node
         if node.parent:
-            self.goto_node(node.parent)
+            self.raise_node(node.parent)
         else:
             self.statusBar().showMessage("Already at the root of this path", 3000)
+
+    def _run_from(self, uid: str | None, verb: str, params: dict[str, Any], *,
+                  member: str | None = None, branch: bool = False,
+                  source: str = "ui") -> None:
+        """Run an operation on the panel it was invoked from.
+
+        Operations always apply to the chart on top, so acting on a chart
+        lower down raises it first - that is the promotion gesture, done
+        implicitly.
+        """
+        if uid and uid in self.graph.nodes and uid != self.graph.current:
+            if member:
+                self._sel[uid] = member
+            self.raise_node(uid)
+        self.run_op(verb, params, member=member, branch=branch, source=source)
 
     def run_op(self, verb: str, params: dict[str, Any], *,
                member: str | None = None, branch: bool = False,
@@ -282,7 +391,8 @@ class MainWindow(QMainWindow):
         kind = result_kind(self.model, new_ctx, op)
         if verb in PRESERVE_KIND and kind == BREAKDOWN:
             kind = self.node.kind if self.node.kind != TIMESERIES else BREAKDOWN
-        self.navigate(new_ctx, kind, op=op, branch=branch)
+        self.navigate(new_ctx, kind, op=op, branch=branch,
+                      in_place=verb in IN_PLACE)
 
     def branch_here(self) -> None:
         """Open a competing hypothesis beside the current path."""
@@ -359,12 +469,21 @@ class MainWindow(QMainWindow):
     # chart interaction
     # ------------------------------------------------------------------
 
+    def _panel_node(self, payload: dict) -> Node:
+        """The node whose panel the gesture came from (the focus by default)."""
+        uid = str(payload.get("view_id") or "")
+        return self.graph.nodes.get(uid) or self.node
+
     def _on_mark_selected(self, payload: dict) -> None:
         key = payload.get("mark", {}).get("key")
-        self.selected_key = key
-        node = self.node
+        node = self._panel_node(payload)
+        # Selecting in a chart lower down does not disturb the stack; only an
+        # operation raises a panel.
+        self._sel[node.uid] = str(key) if key is not None else None
         res = self.engine.execute(node.context, node.kind)
-        self._render(node, res, rebuild_side=False)
+        focus = self.node
+        self._render(focus, self.engine.execute(focus.context, focus.kind),
+                     rebuild_side=False)
         if key:
             row = res.row(str(key))
             metric = self.model.metric(node.context.metric)
@@ -378,33 +497,37 @@ class MainWindow(QMainWindow):
                                              "   (right-click for operations)")
 
     def _on_mark_activated(self, payload: dict) -> None:
-        """Double-click = the most natural drill from here."""
+        """Double-click = the most natural drill from here, opened below."""
         key = payload.get("mark", {}).get("key")
         if not key:
             return
-        ctx = self.node.context
+        node = self._panel_node(payload)
+        ctx = node.context
         current = ctx.grain[0] if ctx.grain else None
         child = self.model.child_dimension(current) if current else None
         if child:
-            self.run_op("drill_down", {"dimension": child}, member=str(key),
-                        source=f"mark:{key}/dblclick")
+            self._run_from(node.uid, "drill_down", {"dimension": child},
+                           member=str(key), source=f"mark:{key}/dblclick")
         else:
             alts = self.model.alternative_dimensions(ctx)
             if alts:
-                self.run_op("decompose", {"dimension": alts[0]}, member=str(key),
-                            source=f"mark:{key}/dblclick")
+                self._run_from(node.uid, "decompose", {"dimension": alts[0]},
+                               member=str(key), source=f"mark:{key}/dblclick")
 
     def _on_mark_menu(self, payload: dict) -> None:
         """Build the context menu from the semantic model's capabilities.
 
         The same selected context exposes the same grammar no matter which
-        chart type it was selected from.
+        chart type it was selected from - or which panel of the stack it came
+        from. The menu is built against that panel's node, and choosing an
+        item raises it to the top before the operation runs.
         """
         mark = payload.get("mark", {})
         key = mark.get("key")
+        node = self._panel_node(payload)
         if key is not None:
-            self.selected_key = str(key)
-        ctx = self.node.context
+            self._sel[node.uid] = str(key)
+        ctx = node.context
         caps = self.model.capabilities(ctx)
 
         menu = QMenu(self)
@@ -418,7 +541,9 @@ class MainWindow(QMainWindow):
         else:
             menu.addSection(str(ctx))
 
-        source = f"view:{self.node.uid}/mark={key}" if key else f"view:{self.node.uid}"
+        source = f"view:{node.uid}/mark={key}" if key else f"view:{node.uid}"
+        if node.uid != self.graph.current:
+            menu.addSection("From a chart below - choosing an item raises it to the top")
         by_group: dict[str, list] = {}
         for cap in caps:
             by_group.setdefault(cap.group, []).append(cap)
@@ -443,8 +568,9 @@ class MainWindow(QMainWindow):
                     act.setToolTip(cap.hint)
                 act.triggered.connect(
                     lambda _=False, v=cap.verb, p=cap.param_map,
-                    k=(str(key) if key is not None else None), s=source:
-                    self.run_op(v, p, member=k, source=s))
+                    k=(str(key) if key is not None else None), s=source,
+                    u=node.uid:
+                    self._run_from(u, v, p, member=k, source=s))
 
         menu.addSeparator()
         if key is not None:
@@ -452,13 +578,23 @@ class MainWindow(QMainWindow):
             if dim and dim != self.model.time_column:
                 act = menu.addAction(f"Focus on {key} (keep this grain)")
                 act.triggered.connect(
-                    lambda _=False, d=dim, k=str(key), s=source:
-                    self.run_op("focus", {"dimension": d, "member": k}, source=s))
+                    lambda _=False, d=dim, k=str(key), s=source, u=node.uid:
+                    self._run_from(u, "focus", {"dimension": d, "member": k},
+                                   source=s))
+        if node.uid != self.graph.current:
+            act_raise = menu.addAction("Raise this chart to the top")
+            act_raise.triggered.connect(
+                lambda _=False, u=node.uid: self.raise_node(u))
+            act_close = menu.addAction("Close this chart")
+            act_close.triggered.connect(
+                lambda _=False, u=node.uid: self.close_node(u))
         act_branch = menu.addAction("Branch from here…")
         act_branch.triggered.connect(self.branch_here)
-        act_pin = menu.addAction("Unpin this node" if self.node.pinned
+        act_pin = menu.addAction("Unpin this node" if node.pinned
                                  else "Pin this node")
-        act_pin.triggered.connect(self.pin_here)
+        act_pin.triggered.connect(
+            lambda _=False, u=node.uid: self._on_panel_action(
+                {"uid": u, "action": "pin"}))
 
         pos = self.chart.mapToGlobal(QPoint(int(payload.get("x", 0)),
                                             int(payload.get("y", 0))))
@@ -580,9 +716,9 @@ class MainWindow(QMainWindow):
     # rendering
     # ------------------------------------------------------------------
 
-    def _render(self, node: Node, res: Any, *, rebuild_side: bool = True) -> None:
-        spec = spec_for(self.model, res, self.theme, selected=self.selected_key)
-        self.chart.render_spec(spec, node.uid, node.context.id, self.theme_name)
+    def _render(self, node: Node, res: Any, *, rebuild_side: bool = True,
+                scroll_to: str | None = None) -> None:
+        self.chart.render_stack(self._stack(node, res, scroll_to=scroll_to))
         self.crumbs.set_path(self.model, self.graph.path_to(node.uid),
                              self.graph.siblings(node.uid))
         self._sync_toolbar(node)
@@ -599,6 +735,84 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"{node.context}   ·   {total}{delta}   ·   {res.fact_rows:,} fact "
             f"rows in {res.computed_ms:.0f} ms   ·   cache {self.engine.cache_size()}")
+
+    # -- the stack ---------------------------------------------------------
+
+    def _stack(self, focus: Node, res: Any, *,
+               scroll_to: str | None) -> dict[str, Any]:
+        """The focused node on top, the views drilled out of it underneath."""
+        panels = [self._panel(focus, res, role="focus")]
+        for child in self.graph.child_nodes(focus.uid):
+            try:
+                child_res = self.engine.execute(child.context, child.kind)
+            except SemanticError:
+                continue        # a child whose scope no longer resolves
+            panels.append(self._panel(child, child_res, role="child"))
+        return {"theme": self.theme_name, "scroll_to": scroll_to,
+                "panels": panels}
+
+    def _panel(self, node: Node, res: Any, *, role: str) -> dict[str, Any]:
+        compact = role == "child"
+        head, sub = titles_for(self.model, res)
+        actions: list[dict[str, Any]] = []
+        badge = ""
+        if compact:
+            actions.append({"action": "raise", "label": "Raise to top",
+                            "primary": True,
+                            "hint": "Put this chart on top, where drilling it "
+                                    "opens its own children below"})
+            actions.append({"action": "close", "label": "✕",
+                            "hint": "Close this chart and anything below it"})
+            deeper = len(node.children)
+            if deeper:
+                badge = f"{deeper} deeper"
+        else:
+            if node.parent and node.parent in self.graph.nodes:
+                actions.append({"action": "up", "label": "↑ Parent",
+                                "hint": f"Back to {self.graph.get(node.parent).title}"})
+            actions.append({"action": "explain", "label": "Explain",
+                            "hint": "Why this view looks the way it does"})
+            actions.append({"action": "pin",
+                            "label": "Unpin" if node.pinned else "Pin"})
+        spec = spec_for(self.model, res, self.theme,
+                        selected=self._sel.get(node.uid), compact=compact)
+        # The panel header carries the headline, so the plot does not repeat it.
+        spec.pop("title", None)
+        scope = node.context.scope_label() if node.context.filters else ""
+        return {
+            "uid": node.uid,
+            "context_id": node.context.id,
+            "role": role,
+            "active": node.uid == self.graph.current,
+            # Two children of the same mother differ by scope, not by headline,
+            # so the scope leads the title.
+            "title": f"{scope} — {head}" if scope and compact else head,
+            "subtitle": sub,
+            "badge": badge,
+            "actions": actions,
+            "spec": spec,
+        }
+
+    def _on_panel_action(self, payload: dict) -> None:
+        uid = str(payload.get("uid") or "")
+        action = payload.get("action")
+        node = self.graph.nodes.get(uid)
+        if node is None:
+            return
+        if action == "raise":
+            self.raise_node(uid)
+        elif action == "close":
+            self.close_node(uid)
+        elif action == "up" and node.parent:
+            self.raise_node(node.parent)
+        elif action == "explain":
+            if uid != self.graph.current:
+                self.raise_node(uid)
+            self.do_explain(member=self._sel.get(uid))
+        elif action == "pin":
+            if uid != self.graph.current:
+                self.raise_node(uid)
+            self.pin_here()
 
     def _refresh_side(self) -> None:
         self.tree.rebuild(self.model, self.graph)

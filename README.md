@@ -54,11 +54,44 @@ ctx3 = apply(model, ctx2, Operation.of("compare", period="mom"))
 exp  = explain(engine, model, ctx3)
 ```
 
+## The chart stack
+
+Because an operation adds a node rather than replacing one, the chart surface
+is a stack rather than a slot:
+
+```
++-----------------------------------------------------+
+| Revenue by Region                     Explain   Pin |  <- the node in focus
+|   Luzon    ####################################     |     full size, on top
+|   Visayas  ######                                   |
++-----------------------------------------------------+
+
+CHILDREN CHARTS   2 views drilled out of the chart above
+
++---------------------------+  +---------------------------+
+| Luzon - by Province  ^  x |  | Visayas - by Province ^ x |  <- two up, small
+|   Metro Manila  ######### |  |   Cebu           ######## |
+|   Cavite        ######    |  |   Negros Occ.    ###      |
++---------------------------+  +---------------------------+
+```
+
+* Drilling from the top chart opens the result **below** it, under a
+  *Children charts* heading. The mother stays where it is, and the children
+  sit two up so drills from the same chart read as one set.
+* **Raise to top** promotes a chart below to the focus slot; it then spawns its
+  own children underneath, and `↑ Parent` walks back up.
+* Acting on a lower chart (right-click, double-click) raises it first, so an
+  operation always applies to the chart on top.
+* Operations that only re-frame the same scope — a different metric, period or
+  comparison — replace the top chart instead of stacking under it.
+* The same drill twice scrolls to the chart that already exists rather than
+  stacking a duplicate; `x` closes a chart and everything drilled out of it.
+
 ## Layers
 
 | Layer | Module | Responsibility |
 |---|---|---|
-| Interaction | `ui/` | Mark selection, context menus, breadcrumbs, branching |
+| Interaction | `ui/` | Mark selection, context menus, breadcrumbs, branching, the chart stack |
 | Analytical grammar | `core/operations.py` | Typed verbs over Contexts |
 | Calendar | `core/timegrain.py` | Day / week / month / quarter / year period maths |
 | Semantic model | `semantic/specs.py` | Validates grain, metrics, hierarchies — and *advertises* what is legal |
@@ -72,7 +105,7 @@ exp  = explain(engine, model, ctx3)
 
 The dependency arrow points one way: `ui → core/engine → semantic`. The engine
 has no idea a GUI exists, which is why the whole framework is testable without
-Qt — 86 tests, none of which open a window.
+Qt — 93 tests, none of which open a window.
 
 ## The analytical grammar
 
@@ -170,7 +203,7 @@ an invalid grain or do arithmetic of its own.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q     # 86 tests, no GUI required
+.venv/bin/python -m pytest tests/ -q     # 93 tests, no GUI required
 ```
 
 `tests/test_framework.py` covers the guarantees: ratio recomputation, semantic

@@ -28,7 +28,8 @@ from explain_beaucoup.engine.narrate import (narrate_explanation,
 from explain_beaucoup.semantic.sales_model import sales_model
 from explain_beaucoup.semantic.specs import SemanticError
 from explain_beaucoup.view.theme import DARK, LIGHT
-from explain_beaucoup.view.vega import spec_for
+from explain_beaucoup.view.vega import (COMPACT_ROWS, COMPACT_STEP,
+                                        spec_for, titles_for)
 
 AUG = "2026-08"
 JUL = "2026-07"
@@ -293,6 +294,37 @@ def test_branching_preserves_both_hypotheses(model):
     assert g.get(a.uid).context.grain == ("product",)
 
 
+def test_closing_a_node_takes_its_subtree_with_it(model):
+    """Closing a chart in the stack must not strand the views it spawned."""
+    g = InvestigationGraph()
+    c1 = ctx()
+    root = g.add(c1, title="root")
+    c2 = apply(model, c1, Operation.of("drill_down", dimension="province",
+                                       member="Luzon"))
+    n2 = g.add(c2, parent=root.uid)
+    n3 = g.add(apply(model, c2, Operation.of("decompose", dimension="product")),
+               parent=n2.uid)
+    keep = g.add(ctx(grain=("product",)), parent=root.uid)
+    g.goto(n3.uid)
+
+    gone = g.remove(n2.uid)
+
+    assert set(gone) == {n2.uid, n3.uid}
+    assert n2.uid not in g.nodes and n3.uid not in g.nodes
+    assert [n.uid for n in g.child_nodes(root.uid)] == [keep.uid]
+    # The focus falls back to the closed node's parent, never to a dead uid.
+    assert g.current == root.uid
+
+
+def test_child_nodes_are_the_charts_below(model):
+    g = InvestigationGraph()
+    root = g.add(ctx(), title="root")
+    first = g.add(ctx(grain=("product",)), parent=root.uid)
+    second = g.add(ctx(grain=("channel",)), parent=root.uid)
+    assert [n.uid for n in g.child_nodes(root.uid)] == [first.uid, second.uid]
+    assert g.child_nodes(first.uid) == []
+
+
 def test_pins_survive_navigation(model):
     g = InvestigationGraph()
     root = g.add(ctx(), title="root")
@@ -389,6 +421,67 @@ def test_diverging_charts_use_the_two_poles_only(engine, model):
 
 
 # -- narration --------------------------------------------------------------
+
+def test_a_compact_spec_fits_a_child_panel(engine, model):
+    """Charts below the focus are glances: fewer categories, no axis titles,
+    no in-plot title - the panel header carries it."""
+    res = engine.execute(ctx(grain=("city",)), BREAKDOWN)
+    full = spec_for(model, res, LIGHT)
+    compact = spec_for(model, res, LIGHT, compact=True)
+
+    assert _row_counts(full)[0] > COMPACT_ROWS
+    assert _row_counts(compact)[0] == COMPACT_ROWS
+    assert "title" in full and "title" not in compact
+    assert all(step <= COMPACT_STEP for step in _band_steps(compact))
+    assert all(step > COMPACT_STEP for step in _band_steps(full))
+    assert _axis_titles(compact) == set()
+    assert _axis_titles(full)
+
+
+def test_a_compact_time_series_keeps_every_point(engine, model):
+    """Dropping periods would misread the shape, so only the height shrinks."""
+    context = ctx(grain=("month",), time=TimeWindow("2025-09", "2026-08"))
+    res = engine.execute(context, TIMESERIES)
+    full = spec_for(model, res, LIGHT)
+    compact = spec_for(model, res, LIGHT, compact=True)
+    assert _row_counts(compact) == _row_counts(full)
+    assert compact["height"] < full["height"]
+
+
+def test_titles_for_matches_the_chart_headline(engine, model):
+    res = engine.execute(ctx(), BREAKDOWN)
+    head, sub = titles_for(model, res)
+    spec = spec_for(model, res, LIGHT)
+    assert spec["title"]["text"] == head
+    assert spec["title"]["subtitle"] == sub
+
+
+def _walk(node):
+    if isinstance(node, dict):
+        yield node
+        for value in node.values():
+            yield from _walk(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _walk(item)
+
+
+def _row_counts(spec) -> list[int]:
+    return [len(n["data"]["values"]) for n in _walk(spec)
+            if isinstance(n.get("data"), dict)
+            and isinstance(n["data"].get("values"), list)]
+
+
+def _band_steps(spec) -> list[float]:
+    return [n["height"]["step"] for n in _walk(spec)
+            if isinstance(n.get("height"), dict) and "step" in n["height"]]
+
+
+def _axis_titles(spec) -> set:
+    return {n["axis"]["title"] for n in _walk(spec)
+            if isinstance(n.get("axis"), dict)
+            and n["axis"].get("title") is not None}
+
 
 def test_narrative_cites_the_context_and_the_numbers(engine, model):
     exp = explain(engine, model, ctx(comparison="mom"))

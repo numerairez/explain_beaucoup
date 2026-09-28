@@ -101,6 +101,32 @@ class InvestigationGraph:
             return [self.nodes[r] for r in self.roots if r != uid]
         return [self.nodes[c] for c in self.nodes[n.parent].children if c != uid]
 
+    def child_nodes(self, uid: str) -> list[Node]:
+        """The views drilled out of this one, oldest first."""
+        node = self.nodes.get(uid)
+        return [self.nodes[c] for c in node.children] if node else []
+
+    def remove(self, uid: str) -> list[str]:
+        """Drop a node and everything drilled out of it.
+
+        Closing a chart in the stack should not strand the views it spawned,
+        so the whole subtree goes. Returns the uids that were removed.
+        """
+        node = self.nodes.get(uid)
+        if node is None:
+            return []
+        doomed = [n.uid for n in self.walk(uid)]
+        if node.parent and node.parent in self.nodes:
+            self.nodes[node.parent].children.remove(uid)
+        elif uid in self.roots:
+            self.roots.remove(uid)
+        for dead in doomed:
+            self.nodes.pop(dead, None)
+        if self.current in doomed:
+            self.current = (node.parent if node.parent in self.nodes
+                            else (self.roots[0] if self.roots else None))
+        return doomed
+
     def walk(self, uid: str | None = None) -> Iterator[Node]:
         stack = [uid] if uid else list(self.roots)
         while stack:
