@@ -1,0 +1,29 @@
+[project]
+name = "explain-beaucoup"
+version = "0.2.0"
+description = "An interactive analytical workspace: contexts, not charts"
+requires-python = ">=3.11"
+dependencies = [
+    "PyQt6>=6.9",
+    "PyQt6-WebEngine>=6.9",
+    "pandas>=2.2",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=15"]
+excel = ["openpyxl>=3.1"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+explain-beaucoup = "explain_beaucoup.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["explain_beaucoup*"]
+
+[tool.setuptools.package-data]
+explain_beaucoup = ["ui/web/*.html", "ui/web/vendor/*.js", "data/*.csv.gz"]

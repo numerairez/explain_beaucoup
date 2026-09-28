@@ -1,0 +1,5 @@
+PyQt6>=6.9
+PyQt6-WebEngine>=6.9
+pandas>=2.2
+PyYAML>=6.0
+# optional: pyarrow (parquet/feather), openpyxl (excel), pytest (tests)

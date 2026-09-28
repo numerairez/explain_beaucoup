@@ -1,0 +1,102 @@
+# Semantic model for the bundled demo dataset.
+#
+# This is the reference example: copy it, point `data.path` at your own file,
+# and rewrite the four sections below. Nothing else in the framework needs to
+# change - the menus, drill paths, validation and explain engine are all
+# generated from what you declare here.
+
+dataset: sales
+title: Sales Analytics
+
+data:
+  path: ../explain_beaucoup/data/sales_monthly.csv.gz
+
+time:
+  column: month
+  grain: month              # the finest grain in the data
+  grains: [month, quarter, year]
+
+dimensions:
+  country:          {label: Country,          column: country}
+  region:           {label: Region,           column: region,
+                     describes: Luzon, Visayas, Mindanao}
+  province:         {label: Province,         column: province}
+  city:             {label: City,             column: city, cell: true}
+  product_category: {label: Product Category, column: product_category}
+  product:          {label: Product,          column: product, cell: true}
+  channel:          {label: Channel,          column: channel, cell: true,
+                     describes: How the sale was originated}
+  customer_segment: {label: Customer Segment, column: customer_segment,
+                     cell: true}
+
+hierarchies:
+  geography:
+    label: Geography
+    levels: [country, region, province, city]
+  product:
+    label: Product
+    levels: [product_category, product]
+
+metrics:
+  revenue:
+    label: Revenue
+    kind: additive
+    format: currency
+    symbol: "₱"
+    column: revenue
+    unit: PHP
+    describes: Gross revenue booked in the period
+  margin:
+    label: Margin
+    kind: additive
+    format: currency
+    symbol: "₱"
+    column: margin
+    describes: Contribution margin in absolute terms
+  volume:
+    label: Volume
+    kind: additive
+    format: number
+    column: volume
+    unit: txn
+    describes: Transaction count
+  customers:
+    label: Customers
+    kind: count
+    format: number
+    column: customers
+    unit: cust
+    describes: Active customers in the period
+  # Ratios are declared from their components and recomputed at every grain.
+  margin_pct:
+    label: Margin %
+    kind: ratio
+    format: percent
+    numerator: margin
+    denominator: revenue
+    describes: margin / revenue - never summed
+  avg_ticket:
+    label: Avg Ticket
+    kind: ratio
+    format: currency
+    symbol: "₱"
+    numerator: revenue
+    denominator: volume
+    describes: revenue / volume - never summed
+
+comparisons:
+  - {name: mom, label: the previous month,   periods: 1}
+  - {name: qoq, label: the previous quarter, months: 3}
+  - {name: yoy, label: the same month last year, years: 1}
+
+relationships:
+  - kind: volume_rate
+    metric: revenue
+    volume: volume
+    rate: avg_ticket
+    volume_noun: transactions
+    rate_noun: average ticket
+
+defaults:
+  metric: revenue
+  grain: [region]

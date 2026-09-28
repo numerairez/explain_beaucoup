@@ -1,0 +1,138 @@
+<meta charset="utf-8">
+<title>Chart surface</title>
+<script src="vendor/vega.min.js"></script>
+<script src="vendor/vega-lite.min.js"></script>
+<script src="vendor/vega-embed.min.js"></script>
+<style>
+  :root { color-scheme: light; --surface: #fcfcfb; --plane: #f9f9f7;
+          --ink: #0b0b0b; --ink2: #52514e; --border: rgba(11,11,11,0.10); }
+  body[data-theme="dark"] { color-scheme: dark; --surface: #1a1a19;
+          --plane: #0d0d0d; --ink: #ffffff; --ink2: #c3c2b7;
+          --border: rgba(255,255,255,0.10); }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--plane); color: var(--ink);
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+    -webkit-user-select: none; user-select: none; overflow-x: hidden;
+  }
+  #card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; margin: 10px; padding: 12px 14px 14px;
+    box-sizing: border-box; width: calc(100% - 20px);
+  }
+  #chart { width: 100%; }
+  #empty { color: var(--ink2); padding: 40px 8px; text-align: center; }
+  /* The framework owns the context menu; Vega's own actions menu is off. */
+  .vega-embed summary { display: none; }
+  .vega-embed .vega-actions { display: none; }
+  #hint {
+    color: var(--ink2); font-size: 11.5px; margin: 10px 2px 0;
+    padding-top: 9px; border-top: 1px solid var(--border);
+  }
+  kbd {
+    font: inherit; border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 4px; background: var(--plane);
+  }
+</style>
+
+<div id="card">
+  <div id="chart"></div>
+  <div id="empty" hidden>No data in this analytical scope.</div>
+  <div id="hint">Click a mark to select it &middot; right-click for the
+    analytical grammar available here</div>
+</div>
+
+<script>
+let bridge = null;
+let view = null;
+let currentViewId = "";
+let currentContextId = "";
+
+new QWebChannel(qt.webChannelTransport, (channel) => {
+  bridge = channel.objects.bridge;
+  if (bridge && bridge.ready) bridge.ready();
+});
+
+function payloadFor(item, gesture, ev) {
+  // The structured selection the design plan asks a mark to emit.
+  const datum = item && item.datum ? item.datum : {};
+  const mark = {};
+  for (const k of ["key", "label", "value", "prior", "delta", "delta_pct",
+                   "share", "z", "baseline", "series"]) {
+    if (datum[k] !== undefined) mark[k] = datum[k];
+  }
+  return JSON.stringify({
+    view_id: currentViewId,
+    context_id: currentContextId,
+    gesture: gesture,
+    mark: mark,
+    x: ev ? Math.round(ev.clientX) : 0,
+    y: ev ? Math.round(ev.clientY) : 0,
+  });
+}
+
+function hasKey(item) {
+  return !!(item && item.datum && item.datum.key !== undefined);
+}
+
+window.renderSpec = function (specJson, viewId, contextId, theme) {
+  const spec = JSON.parse(specJson);
+  currentViewId = viewId || "";
+  currentContextId = contextId || "";
+  document.body.dataset.theme = theme || "light";
+
+  const chartEl = document.getElementById("chart");
+  const emptyEl = document.getElementById("empty");
+  const rows = countRows(spec);
+  emptyEl.hidden = rows !== 0;
+  chartEl.hidden = rows === 0;
+  if (rows === 0) { return; }
+
+  vegaEmbed("#chart", spec, {
+    actions: false, renderer: "svg", tooltip: { theme: theme || "light" },
+  }).then((res) => {
+    view = res.view;
+    view.addEventListener("click", (ev, item) => {
+      if (!bridge || !hasKey(item)) return;
+      bridge.mark_selected(payloadFor(item, "click", ev));
+    });
+    view.addEventListener("contextmenu", (ev, item) => {
+      ev.preventDefault();
+      if (!bridge) return;
+      bridge.mark_menu(payloadFor(item, "contextmenu", ev));
+    });
+    view.addEventListener("dblclick", (ev, item) => {
+      if (!bridge || !hasKey(item)) return;
+      bridge.mark_activated(payloadFor(item, "dblclick", ev));
+    });
+  }).catch((err) => {
+    emptyEl.hidden = false;
+    emptyEl.textContent = "Chart error: " + err;
+    if (bridge) bridge.report_error(String(err));
+  });
+};
+
+function countRows(spec) {
+  const d = spec.data;
+  if (d && Array.isArray(d.values)) return d.values.length;
+  if (Array.isArray(spec.layer)) {
+    for (const l of spec.layer) {
+      if (l.data && Array.isArray(l.data.values)) return l.data.values.length;
+    }
+  }
+  return -1;   // unknown - render anyway
+}
+
+// Right-click anywhere on the surface (not just on a mark) still offers the
+// grammar for the current node.
+document.addEventListener("contextmenu", (ev) => {
+  ev.preventDefault();
+  if (!bridge) return;
+  if (ev.target.closest("svg")) return;   // handled by the Vega listener
+  bridge.mark_menu(JSON.stringify({
+    view_id: currentViewId, context_id: currentContextId,
+    gesture: "contextmenu", mark: {},
+    x: Math.round(ev.clientX), y: Math.round(ev.clientY),
+  }));
+});
+</script>
