@@ -164,8 +164,7 @@ def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
                         tuple(sorted(p.items())), op.source),
             metric=metric)
 
-    elif verb in ("contribution", "change_contribution", "exceptions",
-                  "distribution"):
+    elif verb in ("change_contribution", "exceptions", "distribution"):
         current_grain = ctx.grain[0] if ctx.grain else None
         if verb != "distribution" and (
                 current_grain is None or current_grain == model.time_column):

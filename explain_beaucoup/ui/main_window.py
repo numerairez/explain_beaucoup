@@ -43,8 +43,8 @@ from .panels import (BreadcrumbBar, ContextInspector, ExplainPanel,
 from .style import stylesheet
 
 # Verbs that can be scoped to the mark under the cursor.
-MEMBER_VERBS = {"drill_down", "decompose", "trend", "contribution",
-                "change_contribution", "exceptions", "distribution", "focus"}
+MEMBER_VERBS = {"drill_down", "decompose", "trend", "change_contribution",
+                "exceptions", "distribution", "focus"}
 # Verbs that re-read the same node rather than changing its family of result.
 PRESERVE_KIND = {"compare", "switch_metric", "set_time", "clear_comparison"}
 # Verbs that re-frame the view in place instead of narrowing it. These replace
@@ -670,7 +670,7 @@ class MainWindow(QMainWindow):
                 if alts:
                     self.run_op("decompose", {"dimension": alts[0]}, source="lens")
                 return
-            self.navigate(ctx, BREAKDOWN, op=Operation.of("contribution", "lens"),
+            self.navigate(ctx, BREAKDOWN,
                           title=self._node_title(ctx, BREAKDOWN))
             return
         n = 12 if self.node.context.time.grain in ("day", "week", "month") else 8
@@ -880,6 +880,4 @@ def _member_label(verb: str, label: str, key: str) -> str:
         return f"Show distribution within {key}"
     if verb == "change_contribution":
         return f"What explains {key}'s change?"
-    if verb == "contribution":
-        return f"Show {key}'s contribution"
     return label

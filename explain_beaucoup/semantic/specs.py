@@ -368,11 +368,6 @@ class SemanticModel:
                 "decompose", f"Break down by {self.label_of(alt)}",
                 (("dimension", alt),), "Composition",
                 self.dimensions[alt].describes))
-        if current and not on_time:
-            caps.append(Capability("contribution", "Show contribution to total",
-                                   (), "Composition",
-                                   "Each child's share of the parent value"))
-
         # -- Change --------------------------------------------------------
         for cmp_ in self.comparisons:
             if cmp_.name == ctx.comparison:
