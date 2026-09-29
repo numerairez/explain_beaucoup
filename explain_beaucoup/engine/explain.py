@@ -121,9 +121,20 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
         # "why did the total move?" is usually answered by the bars in front of
         # you - so it leads, followed by the alternatives the model allows.
         dims = list(base.grain) + model.alternative_dimensions(base)
+    # A dimension that can only yield one member inside this scope explains
+    # nothing. Decomposing by it returns a single row whose delta *is* the
+    # parent's, so every signal it produces restates the scope back at you -
+    # "Luzon accounts for 100% of the decrease" - and its lopsidedness is a
+    # perfect 1.0, which would always win "strongest breakdown". That happens
+    # whenever a bar is explained: the member is pinned by a filter while the
+    # chart's own grain is still on screen. `alternative_dimensions` already
+    # rules both cases out; the grain in front of it has to clear the same bar.
     seen: set[str] = set()
     dims = [d for d in dims
-            if d != model.time_column and not (d in seen or seen.add(d))
+            if d != model.time_column
+            and d not in scope_ctx.filter_map
+            and model.member_counts.get(d, 2) > 1
+            and not (d in seen or seen.add(d))
             ][:max_dimensions]
 
     evidence: list[Evidence] = []
