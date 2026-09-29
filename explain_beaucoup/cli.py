@@ -151,18 +151,17 @@ def cmd_run(args: argparse.Namespace) -> int:
 def launch(model_path: Path | None = None, *,
            models_dir: Path | None = None) -> int:
     """Open the workspace. Without a model, the dataset picker runs first."""
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QApplication
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtWidgets import QApplication
 
-    # Qt5 requires both of these before the QApplication exists: WebEngine
-    # needs a shared GL context, and high-DPI scaling is opt-in here (Qt6
-    # turns it on unconditionally).
-    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # WebEngine needs a shared GL context, and the attribute has to be set
+    # before the QApplication exists. Qt6 scales for high DPI unconditionally,
+    # so the two AA_*HighDpi* attributes Qt5 needed here are gone.
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts,
+                              True)
 
-    # Importing the WebEngine module must also happen pre-QApplication on Qt5.
-    import PyQt5.QtWebEngineWidgets  # noqa: F401
+    # Importing the WebEngine module must also happen pre-QApplication.
+    import PyQt6.QtWebEngineWidgets  # noqa: F401
 
     from .semantic.catalog import default_models_dir
     from .semantic.loader import ModelError, load_model_file
@@ -191,7 +190,7 @@ def launch(model_path: Path | None = None, *,
     window = MainWindow(loaded.source, loaded.model,
                         scope_label=loaded.scope_label)
     window.show()
-    return app.exec_()
+    return app.exec()
 
 
 def _relative(target: Path, start: Path) -> str:

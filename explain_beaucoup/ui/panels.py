@@ -5,9 +5,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont
-from PyQt5.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
                              QListWidgetItem, QScrollArea, QSizePolicy,
                              QToolButton, QTreeWidget, QTreeWidgetItem,
                              QVBoxLayout, QWidget)
@@ -301,7 +301,7 @@ class ScoreBar(QWidget):
         self.setToolTip(f"Evidence score {score:.2f}")
 
     def paintEvent(self, _ev: Any) -> None:       # noqa: N802
-        from PyQt5.QtGui import QPainter
+        from PyQt6.QtGui import QPainter
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)

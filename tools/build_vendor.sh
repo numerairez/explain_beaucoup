@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Rebuild the vendored Vega bundles for Qt5's WebEngine.
+# Rebuild the vendored Vega bundles for Qt's WebEngine.
 #
-# Qt 5.15 ships Chromium 83-87. Modern Vega/Vega-Lite builds use ES2021
-# syntax (notably `??=`), which is a *parse* error on Chromium 83 - the whole
-# bundle fails to load and the chart surface goes blank. This script lowers
-# the syntax to what Chromium 83 accepts. Runtime APIs that Chromium 83/87
-# lack (Object.hasOwn, structuredClone, ...) are shimmed separately by
-# vendor/polyfills.js, which is loaded first in chart.html.
+# PyQt6 6.5 ships Chromium 108, which parses and runs modern Vega/Vega-Lite
+# builds unaided, so the transpile below is now a compatibility floor rather
+# than a necessity: it keeps the bundles loadable on the older Chromium 83
+# that Qt 5.15 shipped. Raise the babel target to chrome 108 if you no longer
+# care about that. vendor/polyfills.js, loaded first in chart.html, shims the
+# runtime APIs that older Chromium lacks; every shim is feature-gated, so it
+# costs nothing here.
 #
 # Requires node + npm. Run from the repo root after updating any vega-* file:
 #     ./tools/build_vendor.sh path/to/fresh/vega.min.js ...

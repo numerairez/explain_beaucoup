@@ -22,9 +22,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QFont
-from PyQt5.QtWidgets import (QApplication, QComboBox, QDialog,
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont
+from PyQt6.QtWidgets import (QApplication, QComboBox, QDialog,
                              QDialogButtonBox, QFileDialog, QFrame,
                              QHBoxLayout, QLabel, QLineEdit, QListWidget,
                              QListWidgetItem, QMenu, QMessageBox, QPushButton,
@@ -305,7 +305,8 @@ class DatasetDialog(QDialog):
         # The label grows to "Open scoped workspace" once a filter is set, and
         # the box will not re-widen a button it has already laid out.
         self.open_btn.setMinimumWidth(
-            self.open_btn.fontMetrics().width("Open scoped workspace") + 36)
+            self.open_btn.fontMetrics().horizontalAdvance(
+                "Open scoped workspace") + 36)
         self.open_btn.setDefault(True)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -650,6 +651,6 @@ def choose_dataset(models_dir: Path, theme: Theme) -> LoadedModel | None:
     """Run the picker. None means the person closed it without choosing."""
     dialog = DatasetDialog(catalog.discover(models_dir), models_dir=models_dir,
                            theme=theme)
-    if dialog.exec_() != QDialog.DialogCode.Accepted:
+    if dialog.exec() != QDialog.DialogCode.Accepted:
         return None
     return dialog.chosen
