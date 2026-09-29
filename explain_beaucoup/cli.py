@@ -3,6 +3,7 @@
     explain-beaucoup init sales.csv --time order_date   # propose a model
     explain-beaucoup check model.yaml                   # verify it against data
     explain-beaucoup run   model.yaml                   # open the workspace
+    explain-beaucoup run                                # pick a dataset + scope
 """
 
 from __future__ import annotations
@@ -143,10 +144,13 @@ def _sample(model, source) -> None:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    return launch(Path(args.model))
+    return launch(Path(args.model) if args.model else None,
+                  models_dir=Path(args.models) if args.models else None)
 
 
-def launch(model_path: Path) -> int:
+def launch(model_path: Path | None = None, *,
+           models_dir: Path | None = None) -> int:
+    """Open the workspace. Without a model, the dataset picker runs first."""
     from PyQt5.QtCore import Qt
     from PyQt5.QtWidgets import QApplication
 
@@ -160,18 +164,32 @@ def launch(model_path: Path) -> int:
     # Importing the WebEngine module must also happen pre-QApplication on Qt5.
     import PyQt5.QtWebEngineWidgets  # noqa: F401
 
+    from .semantic.catalog import default_models_dir
     from .semantic.loader import ModelError, load_model_file
     from .ui.main_window import MainWindow
-
-    try:
-        loaded = load_model_file(model_path)
-    except ModelError as exc:
-        print(_paint(f"error: {exc}", RED), file=sys.stderr)
-        return 2
+    from .view.theme import THEMES
 
     app = QApplication(sys.argv[:1])
+    app.setApplicationName("Explain Beaucoup")
+
+    if model_path is not None:
+        try:
+            loaded = load_model_file(model_path)
+        except ModelError as exc:
+            print(_paint(f"error: {exc}", RED), file=sys.stderr)
+            return 2
+    else:
+        # The picker also decides the scope, so it hands back a model whose
+        # data is already narrowed to whatever was chosen.
+        from .ui.dataset_dialog import choose_dataset
+        loaded = choose_dataset(models_dir or default_models_dir(),
+                                THEMES["light"])
+        if loaded is None:
+            return 0
+
     app.setApplicationName(loaded.model.title or "Explain Beaucoup")
-    window = MainWindow(loaded.source, loaded.model)
+    window = MainWindow(loaded.source, loaded.model,
+                        scope_label=loaded.scope_label)
     window.show()
     return app.exec_()
 
@@ -208,8 +226,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also compute a first view and an explanation")
     p.set_defaults(func=cmd_check)
 
-    p = sub.add_parser("run", help="open the workspace")
-    p.add_argument("model")
+    p = sub.add_parser("run", help="open the workspace (no model: pick one)")
+    p.add_argument("model", nargs="?",
+                   help="a model file; omit it to choose a dataset and its "
+                        "scope in the picker")
+    p.add_argument("--models", help="folder of models the picker lists "
+                                    "(default: ./models)")
     p.set_defaults(func=cmd_run)
     return ap
 

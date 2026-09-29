@@ -63,9 +63,13 @@ LENSES = {
 
 class MainWindow(QMainWindow):
     def __init__(self, data: DataSource | pd.DataFrame,
-                 model: SemanticModel) -> None:
+                 model: SemanticModel, *, scope_label: str = "") -> None:
         super().__init__()
         self.model = model
+        # Set when the data was narrowed before the window opened (see
+        # `semantic/catalog.py`). Every total here is a total of that subset, so
+        # it stays on screen rather than being inferred from the title.
+        self.scope_label = scope_label
         frame = data.frame if isinstance(data, DataSource) else data
         if not model.member_counts:
             model.profile(frame)
@@ -194,6 +198,13 @@ class MainWindow(QMainWindow):
             lambda msg: self.statusBar().showMessage(f"Chart error: {msg}", 8000))
         box.addWidget(self.chart, 1)
         self.setCentralWidget(centre)
+        if self.scope_label:
+            note = QLabel(f"Scope: {self.scope_label}")
+            note.setToolTip(
+                "The data was narrowed before this session opened. Every "
+                "total, share and baseline here is computed against that "
+                "subset — reopen the picker to change it.")
+            self.statusBar().addPermanentWidget(note)
         self.statusBar().showMessage("Ready")
 
     def _action(self, tb: QToolBar, text: str, shortcut: str, slot: Any) -> QAction:

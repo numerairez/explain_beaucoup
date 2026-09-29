@@ -42,6 +42,9 @@ class LoadedModel:
     model: SemanticModel
     source: DataSource
     path: Path
+    # Set when the data was narrowed before the session opened; see
+    # `semantic/catalog.py`. Empty means the whole table is in play.
+    scope_label: str = ""
 
     @property
     def frame(self) -> pd.DataFrame:

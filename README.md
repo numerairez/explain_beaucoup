@@ -10,7 +10,8 @@ plan: a dashboard treated not as charts linked by filters, but as an
 
 ```bash
 python3.11 -m venv .venv && .venv/bin/pip install -e .   # Python 3.10 or 3.11
-.venv/bin/explain-beaucoup run models/sales.yaml       # the bundled demo
+.venv/bin/explain-beaucoup run                         # pick a dataset from models/
+.venv/bin/explain-beaucoup run models/sales.yaml       # or straight into the demo
 ```
 
 ## Use it with your own data
@@ -36,7 +37,41 @@ Budget 30–60 minutes for a table you know well; the rest is seconds.
 |---|---|
 | `init <data>` | Reads csv / parquet / xlsx / json / feather, prints a per-column profile (time / dimension / measure / skipped, with the reason), and writes a starter YAML model beside the data. `--time` names the time column if detection is wrong; `--out`, `--name`, `--sheet`, `--separator`, `--force` adjust the rest. |
 | `check <model>` | Loads the model, joins it to the real data, and reports errors and warnings — missing columns, ratios declared as additive, hierarchy levels that do not nest, grains finer than the data. Errors mean it will not run. `--sample` also computes a first breakdown and a real explanation, so you see the whole path work without opening a window. |
-| `run <model>` | Opens the workspace. `python main.py [model.yaml]` is the same thing, defaulting to the bundled demo. |
+| `run [<model>]` | Opens the workspace. With no model it opens the **dataset picker** first — the models in `models/` (`--models DIR` for a folder elsewhere), and the filters that narrow the data before the session starts. `python main.py [model.yaml]` is the same thing. |
+
+### Choosing a dataset, and scoping it before it locks in
+
+`explain-beaucoup run` with no model opens the picker rather than a chart.
+
+* **The datasets** are the YAML models in `models/`, described from the YAML
+  alone — so a folder lists instantly, without reading a row of anyone's data.
+  A model that will *not* load is listed too, greyed out, carrying its reason
+  (`metrics: at least one metric is required`, a data file that has moved).
+  Hiding a broken model is worse than explaining it.
+* **The scope** is chosen before the workspace exists: a period range, plus a
+  set of members per dimension. Member lists cross-filter as filters are added —
+  pick Luzon and the next row only offers Luzon's provinces — and a live count
+  says what is about to be locked in: `19,596 of 47,280 rows (41%) · 12 months,
+  Sep 2025 to Aug 2026 · 7 dimensions to break down by`.
+
+A scope is **not** the `focus` verb. `focus` pins one member inside a session,
+and `drill_up` walks back out of it. A scope narrows the governed frame itself,
+so every total, share, baseline and explanation afterwards is computed against
+the subset and no verb in the grammar can escape it. That is why it is chosen
+once, up front — and why the window title and a permanent status-bar note carry
+it for the rest of the session, so a scoped total is never read as the whole
+table.
+
+Two things fall out of narrowing the *data* rather than the Context:
+
+* Cardinality is **re-profiled** against the subset, so a dimension the scope
+  collapsed to a single member stops being offered as a breakdown — the same
+  rule that already hides single-member hierarchy levels. If the model's landing
+  grain is the one that collapsed, the workspace opens on the next level down
+  instead of a one-bar chart.
+* A scope that would leave no rows, or no dimension to break the first view down
+  by, is **refused in the picker**, by name. The engine would refuse it later;
+  saying so before the window opens costs nothing.
 
 ---
 
@@ -125,6 +160,7 @@ CHILDREN CHARTS   2 views drilled out of the chart above
 | Calendar | `core/timegrain.py` | Day / week / month / quarter / year period maths |
 | Semantic model | `semantic/specs.py` | Validates grain, metrics, hierarchies — and *advertises* what is legal |
 | Model authoring | `semantic/loader.py` | YAML → model, validation against real data, scaffolding |
+| Dataset catalogue | `semantic/catalog.py` | Which models exist, and the scope one is opened under |
 | Data | `data/source.py` | Reads a team's file, normalises the time axis |
 | Analytical engine | `engine/engine.py` | Deterministic computation, result handles, caching |
 | Explain engine | `engine/explain.py` | Ranked, deterministic evidence |
@@ -134,7 +170,7 @@ CHILDREN CHARTS   2 views drilled out of the chart above
 
 The dependency arrow points one way: `ui → core/engine → semantic`. The engine
 has no idea a GUI exists, which is why the whole framework is testable without
-Qt — 93 tests, none of which open a window.
+Qt — 106 tests, none of which open a window.
 
 ---
 
@@ -434,13 +470,18 @@ ratio at an invalid grain or do arithmetic of its own.
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest tests/ -q     # 93 tests, no GUI required
+.venv/bin/python -m pytest tests/ -q     # 106 tests, no GUI required
 ```
 
 `tests/test_framework.py` covers the guarantees: ratio recomputation, semantic
 blocking, context immutability and fingerprint sharing, engine results against
 the raw frame, the planted story in the explain engine, branch/pin
 preservation, and the charting invariants.
+
+`tests/test_catalog.py` covers the layer in front of all that: a folder of
+models described without reading their data, a broken model reported rather than
+dropped, and a scope that re-profiles cardinality, keeps the model it came from
+untouched, and is refused when it would leave nothing to analyse.
 
 `tests/test_portability.py` sets up a second, unrelated dataset from scratch —
 clinic appointments, daily `dd/mm/yyyy` dates, £ costs, its own hierarchy — and

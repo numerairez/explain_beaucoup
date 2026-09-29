@@ -12,6 +12,7 @@ explain-beaucoup init  orders.csv --time order_date # 1. propose a model
 $EDITOR orders.yaml                               # 2. fill in what only you know
 explain-beaucoup check orders.yaml --sample         # 3. verify against your data
 explain-beaucoup run   orders.yaml                  # 4. open the workspace
+explain-beaucoup run                                # ...or pick + scope a dataset
 ```
 
 Steps 1, 3 and 4 take seconds. Step 2 is the real work: **30–60 minutes** for a
@@ -187,6 +188,13 @@ Nothing below is configured — it all follows from the model:
   concentration, deviation from each member's own baseline, new and missing
   members, and volume-vs-rate if you declared it
 - An investigation graph with branches, pins and an exportable report
+- A picker (`explain-beaucoup run` with no model) that lists every model in
+  `models/` and lets you narrow the period range and the members of any
+  dimension *before* the session opens. Whatever you leave becomes the
+  population the whole session is about — every total, share and baseline is
+  computed against it, cardinality is re-profiled so collapsed dimensions stop
+  being offered, and a scope that leaves nothing to break down by is refused
+  with the reason
 - Partial periods at the edge of your data marked on the chart and in the notes
 
 ---
@@ -198,7 +206,10 @@ Nothing below is configured — it all follows from the model:
   they are the only two methods that touch data.
 - **One table.** No joins across fact tables. Pre-join upstream.
 - **No row-level security.** The semantic model has no permissions layer yet;
-  the plan reserves one. Today, filter the file before handing it over.
+  the plan reserves one. The picker's scope is an *analytical* narrowing the
+  analyst chooses, not a boundary imposed on them — it can be widened by
+  reopening the picker. For a boundary, still filter the file before handing it
+  over.
 - **No saved layouts.** Investigations export as Markdown; they are not
   persisted as objects.
 - **One dataset per model file.** Multiple models = multiple files.
