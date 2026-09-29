@@ -467,8 +467,9 @@ class MainWindow(QMainWindow):
         op = Operation.of("focus", "explain-evidence",
                           **({"dimension": ev.dimension, "member": ev.member}
                              if ev.dimension and ev.member else {}))
-        kind = BREAKDOWN
         ctx = ev.target
+        # The evidence says how it wants to be read; a time grain settles it.
+        kind = ev.target_kind or BREAKDOWN
         if ctx.grain and ctx.grain[0] == self.model.time_column:
             kind = TIMESERIES
         title = ev.headline

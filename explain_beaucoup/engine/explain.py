@@ -17,8 +17,9 @@ from dataclasses import dataclass, field
 from dataclasses import replace as dataclasses_replace
 from typing import Any
 
-from ..core.context import Context, LineageStep
-from ..core.operations import Operation, apply
+from ..core import timegrain as tg
+from ..core.context import Context, LineageStep, TimeWindow
+from ..core.operations import CHANGE, TIMESERIES, Operation, apply
 from ..semantic.specs import SemanticError, SemanticModel
 from .engine import AnalyticalEngine, ResultHandle, comparison_label
 
@@ -137,9 +138,9 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
         except SemanticError:
             continue
         provenance.append(res.provenance)
-        evidence.extend(_change_signals(model, res, dim, delta))
+        evidence.extend(_change_signals(engine, model, res, dim, delta))
         evidence.extend(_contribution_signals(model, res, dim))
-        evidence.extend(_membership_signals(model, res, dim))
+        evidence.extend(_membership_signals(engine, model, res, dim))
         evidence.extend(_anomaly_signals(engine, model, dim_ctx, dim))
         lopsidedness[dim] = _lopsidedness(res)
 
@@ -160,7 +161,8 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
 # Signals
 # --------------------------------------------------------------------------
 
-def _change_signals(model: SemanticModel, res: ResultHandle, dim: str,
+def _change_signals(engine: AnalyticalEngine, model: SemanticModel,
+                    res: ResultHandle, dim: str,
                     parent_delta: float | None) -> list[Evidence]:
     """Change contribution and offsetting contributors."""
     if not parent_delta:
@@ -182,7 +184,7 @@ def _change_signals(model: SemanticModel, res: ResultHandle, dim: str,
         share_of_change = d / parent_delta          # can exceed 1 or go negative
         share_of_gross = abs(d) / gross
         same_way = (1 if d > 0 else -1) == parent_dir
-        target = r_context(model, res.context, dim, r.key)
+        target, target_kind = _delta_view(engine, model, res.context, dim, r.key)
 
         if same_way and share_of_change >= 0.12:
             out.append(Evidence(
@@ -196,7 +198,7 @@ def _change_signals(model: SemanticModel, res: ResultHandle, dim: str,
                 magnitude=abs(d), direction=1 if d > 0 else -1,
                 numbers=(("delta", d), ("share_of_change", share_of_change),
                          ("value", r.value), ("prior", r.prior)),
-                target=target))
+                target=target, target_kind=target_kind))
         elif not same_way and abs(d) >= 0.15 * abs(parent_delta):
             out.append(Evidence(
                 kind="offset", dimension=dim, member=r.key,
@@ -208,7 +210,7 @@ def _change_signals(model: SemanticModel, res: ResultHandle, dim: str,
                 magnitude=abs(d), direction=1 if d > 0 else -1,
                 numbers=(("delta", d), ("parent_delta", parent_delta),
                          ("net_without", parent_delta - d)),
-                target=target))
+                target=target, target_kind=target_kind))
     return out
 
 
@@ -257,8 +259,8 @@ def _contribution_signals(model: SemanticModel, res: ResultHandle,
     return out
 
 
-def _membership_signals(model: SemanticModel, res: ResultHandle,
-                        dim: str) -> list[Evidence]:
+def _membership_signals(engine: AnalyticalEngine, model: SemanticModel,
+                        res: ResultHandle, dim: str) -> list[Evidence]:
     """New and missing contributors - structural change in the population."""
     out: list[Evidence] = []
     label = model.label_of(dim)
@@ -274,7 +276,8 @@ def _membership_signals(model: SemanticModel, res: ResultHandle,
                 score=WEIGHT["missing_member"] * min(abs(r.prior) / scale * 4, 1.0),
                 magnitude=abs(r.prior), direction=-1,
                 numbers=(("prior", r.prior),),
-                target=r_context(model, res.context, dim, r.key)))
+                target=member_trend(engine, model, res.context, dim, r.key),
+                target_kind=TIMESERIES))
         elif r.value and not r.prior and res.context.comparison:
             out.append(Evidence(
                 kind="new_member", dimension=dim, member=r.key,
@@ -283,7 +286,8 @@ def _membership_signals(model: SemanticModel, res: ResultHandle,
                 score=WEIGHT["new_member"] * min(abs(r.value) / scale * 4, 1.0),
                 magnitude=abs(r.value), direction=1,
                 numbers=(("value", r.value),),
-                target=r_context(model, res.context, dim, r.key)))
+                target=member_trend(engine, model, res.context, dim, r.key),
+                target_kind=TIMESERIES))
     return out
 
 
@@ -307,7 +311,8 @@ def _anomaly_signals(engine: AnalyticalEngine, model: SemanticModel,
             score=WEIGHT["anomaly"] * min(abs(z) / 4.0, 1.0),
             magnitude=abs(z), direction=1 if z > 0 else -1,
             numbers=(("z", z), ("value", r.value), ("baseline", base)),
-            target=r_context(model, dim_ctx, dim, r.key)))
+            target=member_trend(engine, model, dim_ctx, dim, r.key),
+            target_kind=TIMESERIES))
     return out
 
 
@@ -339,9 +344,13 @@ def _metric_relationship(engine: AnalyticalEngine, model: SemanticModel,
     # Standard decomposition: dV_metric = dVolume x rate_prev + volume_now x dRate
     volume_effect = d_vol * rate_prev
     rate_effect = vol.total * d_rate
-    dominant = (rel.volume_noun if abs(volume_effect) >= abs(rate_effect)
-                else rel.rate_noun)
+    volume_led = abs(volume_effect) >= abs(rate_effect)
+    dominant = rel.volume_noun if volume_led else rel.rate_noun
     vol_metric = model.metric(rel.volume)
+    # Show the side of the split the card credits the move to, over time -
+    # a single bar of either one cannot show an effect.
+    driver = trend_context(engine, model, dataclasses_replace(
+        scope_ctx, metric=rel.volume if volume_led else rel.rate))
     return [Evidence(
         kind="metric_relationship", dimension=None, member=None,
         headline=f"The move is mostly a {dominant} effect",
@@ -355,7 +364,7 @@ def _metric_relationship(engine: AnalyticalEngine, model: SemanticModel,
         direction=1 if parent_delta > 0 else -1,
         numbers=(("volume_effect", volume_effect), ("rate_effect", rate_effect),
                  ("d_volume", d_vol), ("d_rate", d_rate)),
-        target=dataclasses.replace(scope_ctx, metric=rel.rate))]
+        target=driver, target_kind=TIMESERIES)]
 
 
 def _lopsidedness(res: ResultHandle) -> float:
@@ -389,6 +398,59 @@ def r_context(model: SemanticModel, ctx: Context, dim: str,
         return dataclasses.replace(scoped, grain=(child,))
     alts = model.alternative_dimensions(scoped)
     return dataclasses.replace(scoped, grain=(alts[0],) if alts else ())
+
+
+def _delta_view(engine: AnalyticalEngine, model: SemanticModel, ctx: Context,
+                dim: str, member: str) -> tuple[Context, str]:
+    """Where a change driver or an offset lands: the same movement, one level
+    down.
+
+    Both cards claim a *movement* - "Payments accounts for 62% of the
+    decrease", "Lending moved the other way, masking the fall". A levels
+    breakdown answers a different question and leaves the delta in the
+    tooltips, so the landing node is read as change: deltas around a zero
+    line, largest mover first. A member with nothing left to break down by
+    has no change view to offer, so it falls back to its own trend.
+    """
+    target = r_context(model, ctx, dim, member)
+    if target.grain and target.grain[0] != model.time_column:
+        return target, CHANGE
+    return member_trend(engine, model, ctx, dim, member), TIMESERIES
+
+
+def trend_context(engine: AnalyticalEngine, model: SemanticModel,
+                  ctx: Context, *, periods: int = 12) -> Context:
+    """The same scope, read as a trend: the time axis exposed and the window
+    wound back far enough to show where the current period came from.
+
+    Every card whose claim is about *movement over time* - an anomaly against
+    its baseline, a member arriving or disappearing, a rate effect - lands
+    here, because a single-period chart cannot show movement at all.
+    """
+    import dataclasses
+    grain = ctx.time.grain
+    # Period keys sort as text at every grain, so clamping the wound-back
+    # start to the first period with data is a plain max().
+    first = tg.key_of(engine.source.timestamps.min(), grain)
+    start = max(tg.add(ctx.time.start, grain, -periods), first)
+    return dataclasses.replace(ctx, grain=(model.time_column,),
+                               time=TimeWindow(start, ctx.time.end, grain))
+
+
+def member_trend(engine: AnalyticalEngine, model: SemanticModel, ctx: Context,
+                 dim: str, member: str, *, periods: int = 12) -> Context:
+    """One member's own history - what an anomaly or a membership change is
+    actually a claim about.
+
+    Landing on a breakdown *of* that member hides the claim: for an anomaly
+    the deviation is invisible without the baseline behind it, and for a
+    member that has disappeared the current window is empty by definition.
+    """
+    scoped = ctx.with_filter(dim, member,
+                             LineageStep("focus", f"Focus on {member}",
+                                         (("dimension", dim), ("member", member)),
+                                         "explain-evidence"))
+    return trend_context(engine, model, scoped, periods=periods)
 
 
 def _num(v: float | None) -> str:
