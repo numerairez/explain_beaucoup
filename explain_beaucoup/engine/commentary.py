@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import dataclasses
 import html
+import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, NamedTuple
@@ -892,6 +893,7 @@ class Commentary:
         self.journal = journal
         self._beats: dict[int, Beat | None] = {}
         self._answers: dict[str, int] = {}      # answer -> number first told
+        self._acts: set[tuple] = set()          # actions already narrated
 
     def beats(self) -> list[Beat]:
         """The beats worth showing, numbered in order.
@@ -913,11 +915,18 @@ class Commentary:
 
     def _settle(self, entry: JournalEntry, prev: JournalEntry | None,
                 told: list[Beat]) -> Beat | None:
-        # Raising the chart a move just opened is how the UI moves on, not a
-        # step in the investigation.
-        if (entry.action == J.RETURN and prev is not None
-                and prev.uid == entry.uid):
+        # Raising the chart the commentary was just talking about is how the
+        # UI moves on, not a step in the investigation.
+        if (entry.action == J.RETURN and told
+                and told[-1].uid == entry.uid):
             return None
+        # The same action twice is told once - as the chart stack does not
+        # open a second copy of a view it already shows.
+        act = _act_key(entry)
+        if act is not None:
+            if act in self._acts:
+                return None
+            self._acts.add(act)
         beat = narrate_entry(self.model, self.engine, entry)
         beat = dataclasses.replace(beat, number=len(told) + 1)
         # Clicking the same member twice in a row does not need its standing
@@ -1035,10 +1044,92 @@ class Commentary:
         return "".join(out)
 
 
+    def plain(self, *, layout: str = TREE, indent: int = 4) -> str:
+        """Plain text: no markup, indentation carries the tree."""
+        out: list[str] = []
+        for line in self.outline(layout):
+            b = line.beat
+            pad = " " * (indent * line.depth)
+            head = _plain(f"{b.move} {b.selected}".strip())
+            num = f"#{b.number} " if layout == TREE else f"{b.number}. "
+            out.append(f"{pad}{num}{head}")
+            body = " ".join(x for x in (_plain(b.question), _plain(b.answer))
+                            if x)
+            if body:
+                out.append(f"{pad}{' ' * len(num)}{body}")
+            out.append("")
+        return "\n".join(out).rstrip() + "\n" if out else ""
+
+    def tree(self) -> list[dict[str, Any]]:
+        """The commentary as nested data, shaped like the investigation map.
+
+        A `chart` item is the move that opened a chart; its `children` are
+        everything done from it, in order. A `note` item is a move made on an
+        existing chart (a return, pin, explanation, close or blocked attempt)
+        and has no children. `step` is the chronological position, so the
+        timeline can be rebuilt from the tree. Text is plain - no markup -
+        and the state each move landed on is included as data.
+        """
+        entries = {e.seq: e for e in self.journal}
+        roots: list[dict[str, Any]] = []
+        stack: list[tuple[int, dict[str, Any]]] = []
+        for line in self.outline(TREE):
+            b = line.beat
+            e = entries[b.seq]
+            item: dict[str, Any] = {
+                "step": b.number,
+                "type": "chart" if line.head else "note",
+                "action": e.verb if e.action == J.OPERATION else e.action,
+                "move": _plain(b.move),
+            }
+            if b.selected:
+                item["selected"] = _plain(b.selected)
+            if b.question:
+                item["question"] = _plain(b.question)
+            if b.answer:
+                item["answer"] = _plain(b.answer)
+            if e.param_map:
+                item["params"] = {k: v for k, v in e.param_map.items()}
+            if e.context is not None:
+                item["context"] = e.context.to_dict(with_lineage=False)
+                item["context_id"] = e.context.id
+                item["view"] = e.kind or BREAKDOWN
+            if line.head:
+                item["children"] = []
+            while stack and stack[-1][0] >= line.depth:
+                stack.pop()
+            (stack[-1][1]["children"] if stack else roots).append(item)
+            if line.head:
+                stack.append((line.depth, item))
+        return roots
+
+    def json(self, *, indent: int = 2) -> str:
+        return json.dumps({"commentary": self.tree()}, indent=indent,
+                          ensure_ascii=False, default=str)
+
+
 class Line(NamedTuple):
     depth: int
     beat: Beat
     head: bool          # the move that opened a chart, vs. a note on one
+
+
+# Actions that are repeats when done twice. Returns, pins, unpins and closes
+# are toggles or movements - doing one again is a new step, not a repeat.
+_REPEATABLE = {J.OPERATION, J.EXPLAIN, J.EVIDENCE, J.BLOCKED}
+
+
+def _act_key(entry: JournalEntry) -> tuple | None:
+    """What makes two journal entries "exactly the same action": the same
+    move with the same parameters, made from the same state and landing on
+    the same chart and view. Where the gesture came from (toolbar, menu,
+    double-click) does not matter."""
+    if entry.action not in _REPEATABLE:
+        return None
+    return (entry.action, entry.verb, entry.params, entry.uid, entry.kind,
+            entry.context.id if entry.context else None,
+            entry.prior.id if entry.prior else None, entry.branch,
+            entry.detail if entry.action != J.OPERATION else "")
 
 
 _IMPLIED = re.compile(r" _\(No comparison is set on the chart;[^)]*\)_")
@@ -1049,6 +1140,14 @@ def _live(beat: Beat, text: str, live: set[str] | None) -> str:
     if live is not None and beat.uid and beat.uid not in live:
         return _unlink(text.replace(f"](node:{beat.uid})", "]"))
     return text
+
+
+def _plain(md: str) -> str:
+    """The markdown subset beats are written in, as plain text."""
+    out = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", md)
+    out = _unlink(out) if "[" in out else out
+    out = out.replace("**", "")
+    return re.sub(r"(?<![\w])_(.+?)_(?![\w])", r"\1", out)
 
 
 def _html(md: str, theme: Any) -> str:

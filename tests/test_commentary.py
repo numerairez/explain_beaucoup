@@ -416,3 +416,112 @@ def test_a_trend_is_judged_on_complete_periods(engine, model):
     answer = Commentary(model, engine, j).beats()[0].answer
     assert "Q3 2026 is still incomplete" in answer
     assert "low ₱122" not in answer
+
+
+def test_plain_text_has_no_markup_and_keeps_the_tree(engine, model):
+    text = Commentary(model, engine, _tree_session(model)).plain()
+    assert "**" not in text and "](" not in text and "_What" not in text
+    assert "\n        #3 Drilled into Luzon by Province." in text
+
+
+def test_json_nests_like_the_map_and_round_trips(engine, model):
+    import json
+    data = json.loads(Commentary(model, engine, _tree_session(model)).json())
+    (root,) = data["commentary"]
+    assert root["type"] == "chart" and root["step"] == 1
+    cmp_ = root["children"][0]
+    assert [c["step"] for c in cmp_["children"]] == [3, 4]
+    assert cmp_["children"][0]["type"] == "chart"          # the drill
+    assert cmp_["children"][1] == {**cmp_["children"][1], "type": "note",
+                                   "action": "pin"}
+    assert "children" not in cmp_["children"][1]
+    assert root["children"][1]["action"] == "return"
+    drill = cmp_["children"][0]
+    assert drill["context"]["filters"] == {"region": "Luzon"}
+    assert "**" not in json.dumps(data)
+    steps = []
+
+    def walk(items):
+        for it in items:
+            steps.append(it["step"])
+            walk(it.get("children", []))
+    walk(data["commentary"])
+    assert sorted(steps) == [1, 2, 3, 4, 5]                # nothing lost
+
+
+# -- the same action is told once -------------------------------------------
+
+def _twice(model, journal, action, **fields):
+    for _ in range(2):
+        journal.record(action, **fields)
+
+
+def test_the_same_drill_twice_is_told_once(engine, model):
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    p = {"dimension": "province", "member": "Luzon"}
+    c = apply(model, root, Operation.of("drill_down", **p))
+    for i, source in enumerate(("dblclick", "menu")):
+        j.record(J.OPERATION, verb="drill_down", params=p, source=source,
+                 context=c, kind=BREAKDOWN, uid="d", parent="r", title="d",
+                 prior=root, prior_kind=BREAKDOWN, reused=bool(i))
+    assert [b.action for b in Commentary(model, engine, j).beats()] == [
+        J.START, J.OPERATION]
+
+
+def test_explain_evidence_and_blocked_repeats_are_told_once(engine, model):
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    _twice(model, j, J.EXPLAIN, context=root, kind=BREAKDOWN, uid="r",
+           title="Root")
+    _twice(model, j, J.BLOCKED, verb="drill_up", context=root, kind=BREAKDOWN,
+           uid="r", title="Root", detail="Already at the top.")
+    assert len(Commentary(model, engine, j).beats()) == 3
+
+
+def test_a_different_action_is_not_a_repeat(engine, model):
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    for member, uid in (("Luzon", "a"), ("Visayas", "b")):
+        p = {"dimension": "province", "member": member}
+        j.record(J.OPERATION, verb="drill_down", params=p,
+                 context=apply(model, root, Operation.of("drill_down", **p)),
+                 kind=BREAKDOWN, uid=uid, parent="r", title=uid,
+                 prior=root, prior_kind=BREAKDOWN)
+    assert len(Commentary(model, engine, j).beats()) == 3
+
+
+def test_toggles_and_returns_are_moves_not_repeats(engine, model):
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    for action in (J.PIN, J.UNPIN, J.PIN):
+        j.record(action, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    assert [b.action for b in Commentary(model, engine, j).beats()] == [
+        J.START, J.PIN, J.UNPIN, J.PIN]
+
+
+def test_a_repeat_that_moves_focus_is_told_as_a_return(engine, model):
+    """Re-applying an in-place move lands back on the chart it made before:
+    the window records the repeat and a return, and only the return shows."""
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    c = apply(model, root, Operation.of("compare", period="mom"))
+    op = dict(verb="compare", params={"period": "mom"}, context=c,
+              kind=BREAKDOWN, uid="c", parent="r", title="Cmp", prior=root,
+              prior_kind=BREAKDOWN)
+    j.record(J.OPERATION, **op)
+    j.record(J.RETURN, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    j.record(J.OPERATION, reused=True, **op)
+    j.record(J.RETURN, context=c, kind=BREAKDOWN, uid="c", title="Cmp")
+    actions = [b.action for b in Commentary(model, engine, j).beats()]
+    assert actions == [J.START, J.OPERATION, J.RETURN, J.RETURN]

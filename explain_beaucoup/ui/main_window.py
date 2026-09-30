@@ -20,7 +20,7 @@ from PyQt6.QtCore import QMimeData, QPoint, Qt
 from PyQt6.QtGui import QAction, QGuiApplication, QKeySequence
 from PyQt6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
                              QLabel, QMainWindow, QMenu, QMessageBox,
-                             QPushButton, QTabWidget, QTextBrowser, QToolBar,
+                             QTabWidget, QTextBrowser, QToolBar, QToolButton,
                              QVBoxLayout, QWidget)
 
 from ..core import timegrain as tg
@@ -54,6 +54,8 @@ PRESERVE_KIND = {"compare", "switch_metric", "set_time", "clear_comparison"}
 # Verbs that re-frame the view in place instead of narrowing it. These replace
 # the chart on top of the stack; everything else opens a chart below it.
 IN_PLACE = PRESERVE_KIND | {"drill_up", "set_grain"}
+# Member-scoped verbs that re-grain to the member's hierarchy child.
+HIERARCHY_VERBS = {"change_contribution", "exceptions"}
 GROUP_ORDER = ["Explain", "Composition", "Change", "Trend", "Exception",
                "Distribution", "Metric"]
 LENSES = {
@@ -434,11 +436,9 @@ class MainWindow(QMainWindow):
         landed = self.navigate(new_ctx, kind, op=op, branch=branch,
                                in_place=verb in IN_PLACE)
         if landed:
-            node, reused = landed
-            self._log(J.OPERATION, verb=verb, params=p, source=source,
-                      context=new_ctx, kind=kind, uid=node.uid,
-                      title=node.title, prior=prior.context,
-                      prior_kind=prior.kind, branch=branch, reused=reused)
+            self._log_landing(J.OPERATION, landed, prior, verb=verb, params=p,
+                              source=source, context=new_ctx, kind=kind,
+                              branch=branch)
 
     def branch_here(self) -> None:
         """Open a competing hypothesis beside the current path."""
@@ -519,12 +519,12 @@ class MainWindow(QMainWindow):
         if ctx.grain and ctx.grain[0] == self.model.time_column:
             kind = TIMESERIES
         title = ev.headline
+        prior = self.node
         landed = self.navigate(ctx, kind, op=op if ev.member else None,
                                title=title)
         if landed:
-            node, _ = landed
-            self._log(J.EVIDENCE, context=ctx, kind=kind, uid=node.uid,
-                      title=node.title, detail=ev.headline)
+            self._log_landing(J.EVIDENCE, landed, prior, context=ctx,
+                              kind=kind, detail=ev.headline)
         self.statusBar().showMessage(f"Opened evidence: {ev.headline}", 5000)
 
     # ------------------------------------------------------------------
@@ -621,7 +621,18 @@ class MainWindow(QMainWindow):
                 target = menu.addMenu("Switch metric")
             for cap in caps_in:
                 label = cap.label
-                if key is not None and cap.verb in MEMBER_VERBS:
+                if key is not None and cap.verb in HIERARCHY_VERBS:
+                    # Within one member these read along its hierarchy
+                    # only; a leaf member has nowhere to go.
+                    child = (self.model.child_dimension(ctx.grain[0])
+                             if ctx.grain else None)
+                    if child is None:
+                        continue
+                    by = self.model.label_of(child)
+                    label = (f"Break down {key}'s change by {by}"
+                             if cap.verb == "change_contribution" else
+                             f"Find exceptions within {key} by {by}")
+                elif key is not None and cap.verb in MEMBER_VERBS:
                     label = _member_label(cap.verb, label, str(key))
                 if group == "Metric" and target is not menu:
                     label = label.replace("Switch metric to ", "")
@@ -732,17 +743,24 @@ class MainWindow(QMainWindow):
                 if alts:
                     self.run_op("decompose", {"dimension": alts[0]}, source="lens")
                 return
+            prior = self.node
             landed = self.navigate(ctx, BREAKDOWN,
                                    title=self._node_title(ctx, BREAKDOWN))
             if landed:
-                node, reused = landed
-                self._log(J.OPERATION, verb="composition", source="lens",
-                          context=ctx, kind=BREAKDOWN, uid=node.uid,
-                          title=node.title, reused=reused)
+                self._log_landing(J.OPERATION, landed, prior,
+                                  verb="composition", source="lens",
+                                  context=ctx, kind=BREAKDOWN)
             return
         n = 12 if self.node.context.time.grain in ("day", "week", "month") else 8
         params: dict[str, Any] = {"periods": n} if verb == "trend" else {}
-        self.run_op(verb, params, member=self.selected_key, source="lens")
+        member = self.selected_key
+        grain = self.node.context.grain
+        if (verb in HIERARCHY_VERBS and member is not None
+                and not (grain and self.model.child_dimension(grain[0]))):
+            # A leaf member cannot be broken down further; read the whole
+            # view instead of blocking the lens.
+            member = None
+        self.run_op(verb, params, member=member, source="lens")
 
     def toggle_theme(self) -> None:
         self.theme_name = "dark" if self.theme_name == "light" else "light"
@@ -936,18 +954,47 @@ class MainWindow(QMainWindow):
         self.commentary_layout.currentIndexChanged.connect(
             lambda _i: self._refresh_commentary())
         row.addWidget(self.commentary_layout)
-        row.addStretch(1)
-        copy = QPushButton("Copy")
-        copy.setToolTip("Copy the commentary in the layout shown - formatted "
-                        "for documents and email, markdown for plain text")
-        copy.clicked.connect(self.copy_commentary)
+        # Click copies the formatted version; the arrow offers the others.
+        copy = QToolButton()
+        copy.setText("Copy")
+        copy.setToolTip("Copy the commentary - formatted for documents and "
+                        "email (markdown where formatting is not accepted). "
+                        "The arrow offers plain text or nested JSON.")
+        copy.setPopupMode(QToolButton.ToolButtonPopupMode.MenuButtonPopup)
+        copy.clicked.connect(lambda: self.copy_commentary("formatted"))
+        menu = QMenu(copy)
+        for fmt_, label in (("formatted", "Formatted (docs, email, markdown)"),
+                            ("plain", "Plain text"),
+                            ("json", "JSON (nested)")):
+            menu.addAction(label).triggered.connect(
+                lambda _=False, f=fmt_: self.copy_commentary(f))
+        copy.setMenu(menu)
+        self.commentary_copy = copy
         row.addWidget(copy)
+        row.addStretch(1)
         box.addLayout(row)
         self.commentary_view = QTextBrowser()
         self.commentary_view.setOpenLinks(False)
         self.commentary_view.anchorClicked.connect(self._on_commentary_link)
         box.addWidget(self.commentary_view, 1)
         return host
+
+    def _log_landing(self, action: str, landed: tuple[Node, bool],
+                     prior: Node, **fields: Any) -> None:
+        """Record a move that landed on a chart.
+
+        A move that lands on a chart already open is recorded as `reused`;
+        the commentary does not retell a repeat. If the repeat did move the
+        focus - an in-place move back onto an existing chart - that is a real
+        step, recorded as a return to it.
+        """
+        node, reused = landed
+        self._log(action, uid=node.uid, title=node.title,
+                  prior=prior.context, prior_kind=prior.kind, reused=reused,
+                  **fields)
+        if reused and self.graph.current == node.uid != prior.uid:
+            self._log(J.RETURN, context=node.context, kind=node.kind,
+                      uid=node.uid, title=node.title)
 
     def _log(self, action: str, **fields: Any) -> None:
         """Record a move in the journal and bring the commentary up to date."""
@@ -968,26 +1015,38 @@ class MainWindow(QMainWindow):
         if self.journal.entries:
             view.scrollToAnchor(f"s{self.journal.entries[-1].seq}")
 
-    def copy_commentary(self) -> None:
-        """Put the commentary on the clipboard as rich text and markdown.
+    def copy_commentary(self, fmt_: str = "formatted") -> None:
+        """Put the commentary on the clipboard.
 
-        Editors that take formatting (docs, email) paste the indented version;
-        plain-text targets (chat, a .md file) get markdown. Chart links only
-        work inside the app, so both copies drop them - and the rich copy is
-        always in light colours, whatever the app's theme.
+        formatted  rich text for editors that take it (docs, email), with
+                   markdown alongside for plain-text targets (chat, .md)
+        plain      text only, no markup; indentation carries the tree
+        json       nested like the map, whatever layout is shown, with each
+                   move's analytical state as data
+
+        Chart links only work inside the app, so every copy drops them, and
+        the rich copy is always in light colours whatever the app's theme.
         """
         if not self.journal.entries:
             self.statusBar().showMessage("Nothing to copy yet", 3000)
             return
         layout = self.commentary_layout.currentData() or TREE
         data = QMimeData()
-        data.setText(self.commentary.markdown(live=set(), layout=layout))
-        data.setHtml(self.commentary.html(LIGHT, live=set(), layout=layout))
+        if fmt_ == "json":
+            data.setText(self.commentary.json())
+            shape = "nested JSON"
+        elif fmt_ == "plain":
+            data.setText(self.commentary.plain(layout=layout))
+            shape = f"plain text, {self.commentary_layout.currentText().lower()}"
+        else:
+            data.setText(self.commentary.markdown(live=set(), layout=layout))
+            data.setHtml(self.commentary.html(LIGHT, live=set(), layout=layout))
+            shape = self.commentary_layout.currentText().lower()
         QGuiApplication.clipboard().setMimeData(data)
         n = len(self.commentary.beats())
         self.statusBar().showMessage(
             f"Copied {n} step{'s' if n != 1 else ''} of commentary "
-            f"({self.commentary_layout.currentText().lower()})", 4000)
+            f"({shape})", 4000)
 
     def _on_commentary_link(self, url: Any) -> None:
         if url.scheme() == "node":
@@ -1028,10 +1087,6 @@ def _member_label(verb: str, label: str, key: str) -> str:
         return label.replace("Break down by", f"Break {key} down by")
     if verb == "trend":
         return f"Trend {key} over 12 months"
-    if verb == "exceptions":
-        return f"Find exceptions within {key}"
     if verb == "distribution":
         return f"Show distribution within {key}"
-    if verb == "change_contribution":
-        return f"What explains {key}'s change?"
     return label

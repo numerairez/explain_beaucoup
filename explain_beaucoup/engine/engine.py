@@ -209,12 +209,17 @@ class AnalyticalEngine:
             ptot = self._aggregate(pscope, metric, None)
             prior_total = _f(ptot["__value__"].iloc[0]) if len(ptot) else None
 
+        # A member that is new this period (or gone since) moved from (or to)
+        # nothing. For an additive metric that is a real movement and must be
+        # counted, or the children stop summing to the parent's change; a
+        # ratio has no value to move from, so it stays unknown.
+        additive = pwin is not None and not metric.is_ratio
         rows: list[Row] = []
         for _, r in cur.iterrows():
             key = str(r["__key__"])
             value = _f(r["__value__"])
             prior = prior_map.get(key)
-            delta = (value - prior) if (value is not None and prior is not None) else None
+            delta = _delta(value, prior, additive)
             dpct = (delta / prior) if (delta is not None and prior) else None
             share = None
             if not metric.is_ratio and total:
@@ -225,7 +230,8 @@ class AnalyticalEngine:
         # Members that existed in the prior period but are gone now.
         for key, prior in prior_map.items():
             if not any(r.key == key for r in rows):
-                rows.append(Row(key, key, None, prior, None, None, None,
+                rows.append(Row(key, key, None, prior,
+                                _delta(None, prior, additive), None, None,
                                 extra=(("missing", True),)))
 
         rows.sort(key=lambda r: (r.value is None, -(r.value or 0.0)))
@@ -441,3 +447,12 @@ def _f(v: Any) -> float | None:
     except (TypeError, ValueError):
         pass
     return float(v)
+
+
+def _delta(value: float | None, prior: float | None,
+           additive: bool) -> float | None:
+    if value is not None and prior is not None:
+        return value - prior
+    if additive and (value is not None or prior is not None):
+        return (value or 0.0) - (prior or 0.0)
+    return None

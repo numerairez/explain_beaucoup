@@ -20,7 +20,7 @@ from explain_beaucoup.core.operations import (BREAKDOWN, CHANGE, DISTRIBUTION,
                                             EXCEPTIONS, TIMESERIES, Operation,
                                             apply, result_kind)
 from explain_beaucoup.data.generate import load_frame
-from explain_beaucoup.engine.engine import AnalyticalEngine
+from explain_beaucoup.engine.engine import AnalyticalEngine, _delta
 from explain_beaucoup.engine.explain import explain
 from explain_beaucoup.engine.narrate import (narrate_explanation,
                                            narrate_investigation,
@@ -107,6 +107,61 @@ def test_structural_drill_must_follow_the_hierarchy(model):
 def test_change_contribution_needs_a_dimensional_grain(model):
     with pytest.raises(SemanticError, match="dimensional grain"):
         apply(model, ctx(grain=()), Operation.of("change_contribution"))
+
+
+def test_change_within_a_member_breaks_it_down_one_level(engine, model):
+    """"Break down Luzon's change" ranks Luzon's parts, not Luzon alone."""
+    c = apply(model, ctx(), Operation.of("change_contribution", member="Luzon"))
+    assert c.filter_map["region"] == "Luzon"
+    assert c.grain == ("province",)                       # structural child
+    res = engine.execute(c, CHANGE)
+    assert len([r for r in res.rows if r.delta is not None]) > 1
+
+
+def test_change_within_a_leaf_member_is_blocked(frame, model):
+    """No level below it in a hierarchy: nothing to break the change down by."""
+    member = str(sorted(frame[model.dim("channel").column].unique())[0])
+    with pytest.raises(SemanticError, match="no level below"):
+        apply(model, ctx(grain=("channel",)),
+              Operation.of("change_contribution", member=member))
+
+
+def test_exceptions_within_a_member_break_it_down(model):
+    c = apply(model, ctx(), Operation.of("exceptions", member="Luzon"))
+    assert c.grain == ("province",)
+
+
+def test_exceptions_within_a_leaf_member_are_blocked(frame, model):
+    member = str(sorted(frame[model.dim("channel").column].unique())[0])
+    with pytest.raises(SemanticError, match="no level below"):
+        apply(model, ctx(grain=("channel",)),
+              Operation.of("exceptions", member=member))
+
+
+def test_new_and_gone_members_count_toward_an_additive_change():
+    """A member present on one side only moved from (or to) zero, so the
+    children still sum to the parent; a ratio has nothing to move from."""
+    assert _delta(None, 50.0, True) == -50.0              # gone
+    assert _delta(20.0, None, True) == 20.0               # new
+    assert _delta(20.0, None, False) is None              # ratio / no reference
+
+
+def test_compact_change_panel_keeps_the_biggest_movers(engine, model):
+    res = engine.execute(ctx(grain=("product",), comparison="yoy",
+                             metric="volume"), CHANGE)
+    movers = sorted((r for r in res.rows if r.delta), key=lambda r: -abs(r.delta))
+    kept = {d["key"] for d in
+            spec_for(model, res, LIGHT, compact=True)["data"]["values"]}
+    assert kept == {r.key for r in movers[:COMPACT_ROWS]}
+
+
+def test_change_tooltip_fields_exist_in_the_data(engine, model):
+    res = engine.execute(ctx(comparison="mom"), CHANGE)
+    spec = spec_for(model, res, LIGHT)
+    fields = set(spec["data"]["values"][0])
+    for layer in spec["layer"]:
+        for tip in layer.get("encoding", {}).get("tooltip", []):
+            assert tip["field"] in fields
 
 
 def test_a_comparison_that_overlaps_its_own_window_is_blocked(model):
@@ -521,3 +576,9 @@ def test_result_kind_follows_the_operation(model):
     assert result_kind(model, c, None) == BREAKDOWN
     assert result_kind(model, c, Operation.of("exceptions")) == EXCEPTIONS
     assert result_kind(model, ctx(grain=("month",)), None) == TIMESERIES
+
+
+def test_change_capability_names_the_dimension_it_breaks_down_by(model):
+    labels = [c.label for c in model.capabilities(ctx(comparison="mom"))
+              if c.verb == "change_contribution"]
+    assert labels == ["Break down change by Region"]

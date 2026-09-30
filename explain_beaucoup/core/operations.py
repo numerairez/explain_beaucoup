@@ -178,6 +178,18 @@ def apply(model: SemanticModel, ctx: Context, op: Operation) -> Context:
         member = p.get("member")
         filters, window = _narrow(model, ctx, member)
         changes: dict[str, Any] = {"filters": filters, "time": window}
+        if member is not None and verb != "distribution":
+            # Pinned to one member, the current grain has a single mark left:
+            # the member itself, owning 100% of its own movement. Read it
+            # along its hierarchy instead - the next level down, or not at all.
+            child = model.child_dimension(current_grain)
+            if child is None:
+                raise SemanticError(
+                    f"{member} has no level below "
+                    f"{model.label_of(current_grain)} to break "
+                    f"'{verb.replace('_', ' ')}' down by. Use 'Break down by' "
+                    f"to pick a dimension.")
+            changes["grain"] = (child,)
         if verb == "change_contribution" and not ctx.comparison:
             changes["comparison"] = "mom"
         new = ctx.evolve(

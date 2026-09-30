@@ -381,7 +381,8 @@ class SemanticModel:
                 f"Reference: {cmp_.label_for(ctx.time.grain)}"))
         if current and not on_time:
             caps.append(Capability("change_contribution",
-                                   "What explains the change?", (), "Change",
+                                   f"Break down change by "
+                                   f"{self.label_of(current)}", (), "Change",
                                    "Rank children by their share of the "
                                    "parent's movement"))
 

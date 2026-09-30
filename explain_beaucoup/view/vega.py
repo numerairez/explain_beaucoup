@@ -464,12 +464,14 @@ def _change_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
     metric = res.metric
     movers = [r for r in res.rows if r.delta is not None and r.delta != 0]
     movers.sort(key=lambda r: -abs(r.delta or 0))
+    # Data stays in size order, biggest mover first: a compact panel keeps
+    # the leading rows, and those must be the drivers, not the biggest
+    # fallers. The axis order (smallest to largest delta) is set by `order`.
     movers = movers[:MAX_BARS]
-    movers.sort(key=lambda r: r.delta or 0)
     parent = res.delta_total or 0.0
     data = [{
         "key": r.key, "label": r.label, "delta": r.delta,
-        "value": r.value, "prior": r.prior,
+        "delta_pct": r.delta_pct, "value": r.value, "prior": r.prior,
         "share_of_change": (r.delta / parent) if parent else None,
         "delta_txt": fmt.signed(metric, r.delta),
         "share_txt": f"{(r.delta/parent):.0%}" if parent else "-",
@@ -482,7 +484,7 @@ def _change_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
                {"field": "share_txt", "title": "Share of total change"},
                {"field": "delta_pct", "title": "vs own base", "format": ".1%"}]
 
-    order = [d["key"] for d in data]
+    order = [d["label"] for d in sorted(data, key=lambda d: d["delta"])]
     bars = {
         "mark": {"type": "bar", "cornerRadiusEnd": 4},
         "encoding": {
