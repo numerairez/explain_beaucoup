@@ -16,25 +16,30 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from PyQt6.QtCore import QPoint, Qt
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QLabel,
-                             QMainWindow, QMenu, QMessageBox, QTabWidget,
-                             QTextBrowser, QToolBar, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QMimeData, QPoint, Qt
+from PyQt6.QtGui import QAction, QGuiApplication, QKeySequence
+from PyQt6.QtWidgets import (QComboBox, QDockWidget, QFileDialog, QHBoxLayout,
+                             QLabel, QMainWindow, QMenu, QMessageBox,
+                             QPushButton, QTabWidget, QTextBrowser, QToolBar,
+                             QVBoxLayout, QWidget)
 
 from ..core import timegrain as tg
 from ..core.context import Context, TimeWindow
+from ..core import journal as J
 from ..core.graph import InvestigationGraph, Node
+from ..core.journal import Journal
 from ..core.operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
                                TIMESERIES, Operation, apply, result_kind)
 from ..data.source import DataSource
+from ..engine.commentary import (TIMELINE, TREE, Commentary,
+                                 narrate_commentary)
 from ..engine.engine import AnalyticalEngine, comparison_label
 from ..engine.explain import Evidence, explain
 from ..engine.narrate import (narrate_explanation, narrate_investigation,
                               suggested_questions)
 from ..semantic.specs import SemanticError, SemanticModel
 from ..view import format as fmt
-from ..view.theme import THEMES, Theme
+from ..view.theme import LIGHT, THEMES, Theme
 from ..view.vega import spec_for, titles_for
 from .chart_view import ChartView
 from .panels import (BreadcrumbBar, ContextInspector, ExplainPanel,
@@ -74,6 +79,9 @@ class MainWindow(QMainWindow):
             model.profile(frame)
         self.engine = AnalyticalEngine(data, model)
         self.graph = InvestigationGraph()
+        # What the analyst did, in order - the graph only keeps where they are.
+        self.journal = Journal()
+        self.commentary = Commentary(model, self.engine, self.journal)
         self.theme_name = "light"
         # One selected mark per node: a child panel keeps its own selection.
         self._sel: dict[str, str | None] = {}
@@ -95,9 +103,14 @@ class MainWindow(QMainWindow):
             TimeWindow.single(self.engine.source.latest(model.time_grain),
                               model.time_grain),
             grain=grain)
-        self.navigate(root, BREAKDOWN,
-                      title=f"{metric.label} by {model.label_of(grain[0])}"
-                            if grain else metric.label)
+        landed = self.navigate(
+            root, BREAKDOWN,
+            title=f"{metric.label} by {model.label_of(grain[0])}"
+                  if grain else metric.label)
+        if landed:
+            node, _ = landed
+            self._log(J.START, context=node.context, kind=node.kind,
+                      uid=node.uid, title=node.title)
         self.explain_panel.show_placeholder()
 
     # ------------------------------------------------------------------
@@ -241,6 +254,7 @@ class MainWindow(QMainWindow):
         self.report = QTextBrowser()
         self.report.setOpenExternalLinks(False)
         self.right_tabs.addTab(self.explain_panel, "Explain")
+        self.right_tabs.addTab(self._build_commentary(), "Commentary")
         self.right_tabs.addTab(self.questions, "Next")
         self.right_tabs.addTab(self.inspector, "Context")
         self.right_tabs.addTab(self.report, "Report")
@@ -255,19 +269,22 @@ class MainWindow(QMainWindow):
     def navigate(self, ctx: Context, kind: str = BREAKDOWN, *,
                  op: Operation | None = None, parent: str | None = "__current__",
                  branch: bool = False, title: str = "",
-                 in_place: bool = False) -> None:
+                 in_place: bool = False) -> tuple[Node, bool] | None:
         """Run an operation and put its result on the stack.
 
         By default the result opens *below* the node it came from, which keeps
         the mother chart on top and its children visible beside each other.
         `in_place` is for operations that re-frame the same scope (a different
         metric, period or comparison): those replace the chart on top.
+
+        Returns the node landed on and whether it was already open, or None
+        if the model blocked it.
         """
         try:
             res = self.engine.execute(ctx, kind)
         except SemanticError as exc:
-            self._blocked(str(exc))
-            return
+            self._blocked(str(exc), verb=op.verb if op else "")
+            return None
         parent_uid = self.graph.current if parent == "__current__" else parent
         existing = None if branch else self._existing_child(parent_uid, ctx, kind)
         if existing is not None:
@@ -279,12 +296,17 @@ class MainWindow(QMainWindow):
             node = self.graph.add(ctx, kind=kind, op=op, parent=parent_uid,
                                   title=title or self._node_title(ctx, kind))
         member = op.param_map.get("member") if op else None
-        self._sel[node.uid] = member
+        # The clicked member stays selected only where it is still a mark: a
+        # drill re-splits the scope, and "Mindanao" is not a Customer Segment.
+        # Carrying it over would scope the next lens to a member that does
+        # not exist, and the chart would come back empty.
+        self._sel[node.uid] = (member if member is not None
+                               and res.row(str(member)) is not None else None)
 
         if in_place or node.parent != parent_uid or parent_uid is None:
             self.graph.current = node.uid
             self._render(node, res, scroll_to=node.uid)
-            return
+            return node, existing is not None
 
         # The mother keeps the top slot; the new view opens under it.
         self.graph.current = parent_uid
@@ -295,13 +317,14 @@ class MainWindow(QMainWindow):
             mother_res = self.engine.execute(mother.context, mother.kind)
         except SemanticError as exc:              # pragma: no cover
             self._blocked(str(exc))
-            return
+            return None
         self._render(mother, mother_res, scroll_to=node.uid)
         verb = op.verb.replace("_", " ") if op else "view"
         self.statusBar().showMessage(
             f"{'Already open' if existing is not None else 'Opened'} below: "
             f"{node.title}   ·   raise it to the top to drill further "
             f"({verb})", 6000)
+        return node, existing is not None
 
     def _existing_child(self, parent_uid: str | None, ctx: Context,
                         kind: str) -> Node | None:
@@ -317,6 +340,7 @@ class MainWindow(QMainWindow):
         """Raise a node to the top of the stack."""
         if uid not in self.graph.nodes:
             return
+        moved = uid != self.graph.current
         node = self.graph.goto(uid)
         try:
             res = self.engine.execute(node.context, node.kind)
@@ -324,6 +348,9 @@ class MainWindow(QMainWindow):
             self._blocked(str(exc))
             return
         self._render(node, res, scroll_to=uid)
+        if moved:
+            self._log(J.RETURN, context=node.context, kind=node.kind,
+                      uid=node.uid, title=node.title)
 
     def raise_node(self, uid: str) -> None:
         if uid == self.graph.current:
@@ -344,6 +371,8 @@ class MainWindow(QMainWindow):
         if node is None or node.uid == self.graph.current:
             return
         title = node.title
+        self._log(J.CLOSE, context=node.context, kind=node.kind, uid=uid,
+                  title=title, count=len(list(self.graph.walk(uid))) - 1)
         gone = self.graph.remove(uid)
         for dead in gone:
             self._sel.pop(dead, None)
@@ -390,19 +419,26 @@ class MainWindow(QMainWindow):
                                                        self.node.context.time.grain))
             p.pop("latest", None)
         op = Operation.of(verb, source, **p)
+        prior = self.node
         try:
-            new_ctx = apply(self.model, self.node.context, op)
+            new_ctx = apply(self.model, prior.context, op)
         except SemanticError as exc:
-            self._blocked(str(exc))
+            self._blocked(str(exc), verb=verb, params=p)
             return
         except Exception as exc:                              # pragma: no cover
-            self._blocked(str(exc))
+            self._blocked(str(exc), verb=verb, params=p)
             return
         kind = result_kind(self.model, new_ctx, op)
         if verb in PRESERVE_KIND and kind == BREAKDOWN:
-            kind = self.node.kind if self.node.kind != TIMESERIES else BREAKDOWN
-        self.navigate(new_ctx, kind, op=op, branch=branch,
-                      in_place=verb in IN_PLACE)
+            kind = prior.kind if prior.kind != TIMESERIES else BREAKDOWN
+        landed = self.navigate(new_ctx, kind, op=op, branch=branch,
+                               in_place=verb in IN_PLACE)
+        if landed:
+            node, reused = landed
+            self._log(J.OPERATION, verb=verb, params=p, source=source,
+                      context=new_ctx, kind=kind, uid=node.uid,
+                      title=node.title, prior=prior.context,
+                      prior_kind=prior.kind, branch=branch, reused=reused)
 
     def branch_here(self) -> None:
         """Open a competing hypothesis beside the current path."""
@@ -426,12 +462,18 @@ class MainWindow(QMainWindow):
         node = self.node
         if node.pinned:
             self.graph.unpin(node.uid)
+            self._log(J.UNPIN, context=node.context, kind=node.kind,
+                      uid=node.uid, title=node.title)
             self.statusBar().showMessage("Unpinned", 2500)
         else:
             res = self.engine.execute(node.context, node.kind)
             metric = self.model.metric(node.context.metric)
             self.graph.pin(node.uid,
                            f"{metric.label} {fmt.value(metric, res.total, short=True)}")
+            # The pin's note is generated from the reading, so the commentary
+            # tells the reading itself rather than quoting it back.
+            self._log(J.PIN, context=node.context, kind=node.kind,
+                      uid=node.uid, title=node.title)
             self.statusBar().showMessage("Pinned for comparison and the report", 2500)
         self._refresh_side()
 
@@ -451,8 +493,12 @@ class MainWindow(QMainWindow):
         try:
             exp = explain(self.engine, self.model, ctx)
         except SemanticError as e:
-            self._blocked(str(e))
+            self._blocked(str(e), verb="explain",
+                          params={"member": member} if member else None)
             return
+        self._log(J.EXPLAIN, context=ctx, kind=BREAKDOWN, uid=self.node.uid,
+                  title=self.node.title,
+                  params={"member": member} if member else None)
         self._last_explanation = exp
         self.explain_panel.show_explanation(self.model, exp)
         self.right_tabs.setCurrentIndex(0)
@@ -473,7 +519,12 @@ class MainWindow(QMainWindow):
         if ctx.grain and ctx.grain[0] == self.model.time_column:
             kind = TIMESERIES
         title = ev.headline
-        self.navigate(ctx, kind, op=op if ev.member else None, title=title)
+        landed = self.navigate(ctx, kind, op=op if ev.member else None,
+                               title=title)
+        if landed:
+            node, _ = landed
+            self._log(J.EVIDENCE, context=ctx, kind=kind, uid=node.uid,
+                      title=node.title, detail=ev.headline)
         self.statusBar().showMessage(f"Opened evidence: {ev.headline}", 5000)
 
     # ------------------------------------------------------------------
@@ -681,8 +732,13 @@ class MainWindow(QMainWindow):
                 if alts:
                     self.run_op("decompose", {"dimension": alts[0]}, source="lens")
                 return
-            self.navigate(ctx, BREAKDOWN,
-                          title=self._node_title(ctx, BREAKDOWN))
+            landed = self.navigate(ctx, BREAKDOWN,
+                                   title=self._node_title(ctx, BREAKDOWN))
+            if landed:
+                node, reused = landed
+                self._log(J.OPERATION, verb="composition", source="lens",
+                          context=ctx, kind=BREAKDOWN, uid=node.uid,
+                          title=node.title, reused=reused)
             return
         n = 12 if self.node.context.time.grain in ("day", "week", "month") else 8
         params: dict[str, Any] = {"periods": n} if verb == "trend" else {}
@@ -695,6 +751,7 @@ class MainWindow(QMainWindow):
         self._apply_theme(self.theme_name)
         # Panels hold token colours, so rebuild them against the new theme.
         self._build_docks_refresh()
+        self._refresh_commentary()
         node = self.node
         self._render(node, self.engine.execute(node.context, node.kind))
 
@@ -713,7 +770,9 @@ class MainWindow(QMainWindow):
             f"background: {t.surface}; border-bottom: 1px solid {t.border};")
 
     def export_report(self) -> None:
-        text = narrate_investigation(self.model, self.engine, self.graph)
+        text = (narrate_investigation(self.model, self.engine, self.graph)
+                + "\n\n" + narrate_commentary(self.model, self.engine,
+                                              self.journal) + "\n")
         path, _ = QFileDialog.getSaveFileName(
             self, "Export investigation", "investigation.md",
             "Markdown (*.md);;All files (*)")
@@ -857,6 +916,83 @@ class MainWindow(QMainWindow):
         self.act_back.setEnabled(bool(node.parent))
         self._syncing = False
 
+    # -- commentary --------------------------------------------------------
+
+    def _build_commentary(self) -> QWidget:
+        """The commentary tab: the story so far, nested like the map."""
+        host = QWidget()
+        box = QVBoxLayout(host)
+        box.setContentsMargins(0, 6, 0, 0)
+        box.setSpacing(4)
+        row = QHBoxLayout()
+        row.setContentsMargins(10, 0, 10, 0)
+        row.addWidget(QLabel("Layout"))
+        self.commentary_layout = QComboBox()
+        self.commentary_layout.addItem("Tree", TREE)
+        self.commentary_layout.addItem("Timeline", TIMELINE)
+        self.commentary_layout.setToolTip(
+            "Tree nests each move under the chart it was made from, like the "
+            "map. Timeline lists every move in the order it was made.")
+        self.commentary_layout.currentIndexChanged.connect(
+            lambda _i: self._refresh_commentary())
+        row.addWidget(self.commentary_layout)
+        row.addStretch(1)
+        copy = QPushButton("Copy")
+        copy.setToolTip("Copy the commentary in the layout shown - formatted "
+                        "for documents and email, markdown for plain text")
+        copy.clicked.connect(self.copy_commentary)
+        row.addWidget(copy)
+        box.addLayout(row)
+        self.commentary_view = QTextBrowser()
+        self.commentary_view.setOpenLinks(False)
+        self.commentary_view.anchorClicked.connect(self._on_commentary_link)
+        box.addWidget(self.commentary_view, 1)
+        return host
+
+    def _log(self, action: str, **fields: Any) -> None:
+        """Record a move in the journal and bring the commentary up to date."""
+        # Where the node sits in the map, captured now: a closed chart leaves
+        # the graph, but its moves keep their place in the tree.
+        uid = fields.get("uid")
+        if uid in self.graph.nodes and "parent" not in fields:
+            fields["parent"] = self.graph.get(uid).parent
+        self.journal.record(action, **fields)
+        self._refresh_commentary()
+
+    def _refresh_commentary(self) -> None:
+        view = self.commentary_view
+        layout = self.commentary_layout.currentData() or TREE
+        view.setHtml(self.commentary.html(
+            self.theme, live=set(self.graph.nodes), layout=layout))
+        # The newest beat can sit mid-tree, so follow it rather than the end.
+        if self.journal.entries:
+            view.scrollToAnchor(f"s{self.journal.entries[-1].seq}")
+
+    def copy_commentary(self) -> None:
+        """Put the commentary on the clipboard as rich text and markdown.
+
+        Editors that take formatting (docs, email) paste the indented version;
+        plain-text targets (chat, a .md file) get markdown. Chart links only
+        work inside the app, so both copies drop them - and the rich copy is
+        always in light colours, whatever the app's theme.
+        """
+        if not self.journal.entries:
+            self.statusBar().showMessage("Nothing to copy yet", 3000)
+            return
+        layout = self.commentary_layout.currentData() or TREE
+        data = QMimeData()
+        data.setText(self.commentary.markdown(live=set(), layout=layout))
+        data.setHtml(self.commentary.html(LIGHT, live=set(), layout=layout))
+        QGuiApplication.clipboard().setMimeData(data)
+        n = len(self.commentary.beats())
+        self.statusBar().showMessage(
+            f"Copied {n} step{'s' if n != 1 else ''} of commentary "
+            f"({self.commentary_layout.currentText().lower()})", 4000)
+
+    def _on_commentary_link(self, url: Any) -> None:
+        if url.scheme() == "node":
+            self.raise_node(url.path())
+
     def _node_title(self, ctx: Context, kind: str) -> str:
         metric = self.model.metric(ctx.metric)
         if kind == TIMESERIES:
@@ -872,9 +1008,16 @@ class MainWindow(QMainWindow):
             return f"{metric.label} by {self.model.label_of(ctx.grain[0])}"
         return f"{metric.label} - {ctx.scope_label()}"
 
-    def _blocked(self, reason: str) -> None:
+    def _blocked(self, reason: str, *, verb: str = "",
+                 params: dict[str, Any] | None = None) -> None:
         """Semantic safety: say why, and change nothing."""
         self.statusBar().showMessage(f"Blocked: {reason}", 8000)
+        # A dead end is part of the story; it goes in the commentary too.
+        if verb and self.graph.current:
+            node = self.node
+            self._log(J.BLOCKED, verb=verb, params=params or {},
+                      context=node.context, kind=node.kind, uid=node.uid,
+                      title=node.title, detail=reason)
         QMessageBox.information(self, "Operation not available", reason)
 
 

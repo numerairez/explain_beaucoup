@@ -265,6 +265,12 @@ class AnalyticalEngine:
         # difference between "sales collapsed" and "the week isn't over".
         data_max = self.source.timestamps.max()
         data_min = self.source.timestamps.min()
+        # Compare at the data's own grain: monthly rows are stamped on the
+        # 1st, so August's last day is after the last timestamp even when
+        # August is complete.
+        native = self.source.native_grain
+        last_key = tg.key_of(data_max, native)
+        first_key = tg.key_of(data_min, native)
 
         rows: list[Row] = []
         partials: list[str] = []
@@ -280,7 +286,9 @@ class AnalyticalEngine:
             delta = (value - prior) if (value is not None and prior is not None) else None
             dpct = (delta / prior) if (delta is not None and prior) else None
             lo, hi = tg.bounds(key, grain)
-            partial = value is not None and (hi > data_max or lo < data_min)
+            partial = value is not None and (
+                tg.key_of(hi, native) > last_key
+                or tg.key_of(lo, native) < first_key)
             if partial:
                 partials.append(tg.label_of(key, grain))
             rows.append(Row(key, tg.label_of(key, grain), value, prior, delta,

@@ -165,12 +165,14 @@ CHILDREN CHARTS   2 views drilled out of the chart above
 | Analytical engine | `engine/engine.py` | Deterministic computation, result handles, caching |
 | Explain engine | `engine/explain.py` | Ranked, deterministic evidence |
 | Investigation graph | `core/graph.py` | Nodes, edges, branches, pins, history |
+| Journal | `core/journal.py` | Every move in order — including returns, closes and dead ends |
 | Renderer | `view/vega.py` | Result → Vega-Lite spec |
 | Narration | `engine/narrate.py` | The AI seam — numbers already decided |
+| Commentary | `engine/commentary.py` | The journal told as prose, one beat per move |
 
 The dependency arrow points one way: `ui → core/engine → semantic`. The engine
 has no idea a GUI exists, which is why the whole framework is testable without
-Qt — 106 tests, none of which open a window.
+Qt — 134 tests, none of which open a window.
 
 ---
 
@@ -389,7 +391,7 @@ place you can go, not a claim you have to trust.
 |---|---|
 | Toolbar | Metric, By (time grain), Period, Compare and **Lens** selectors, then Explain / Drill up / Back / Branch / Pin / Export / Dark mode |
 | Left dock | **Map** — the investigation graph as a tree; **Pins** — saved findings |
-| Right dock | **Explain** — ranked evidence cards; **Next** — suggested questions; **Context** — the node inspector with its provenance SQL; **Report** — the narrated investigation |
+| Right dock | **Explain** — ranked evidence cards; **Next** — suggested questions; **Context** — the node inspector with its provenance SQL; **Commentary** — a running, clickable account of every move made so far; **Report** — the narrated investigation |
 | Centre | Breadcrumbs, then the chart stack |
 
 **Lenses** switch how the node in focus is read without changing what it is
@@ -450,6 +452,21 @@ numbers, the node ids and the operations are all already decided, the narrative
 is a rendering problem. It receives `ResultHandle`s and `Evidence` — never raw
 data — and its output cites node and context ids, which is what makes it
 checkable.
+
+`engine/commentary.py` does the same for the analyst's *moves*. The graph keeps
+where an investigation is; `core/journal.py` keeps what was done to get there,
+in order, including returns, closed charts, pins and blocked operations. Each
+move becomes one beat: the **move** ("Drilled into Luzon by Province"), the
+**question** that move exists to ask ("What is driving Revenue in Luzon?") and
+the engine's **answer**. A drill or breakdown is answered with the members that
+drive the change and those that offset it. A trend gets its range and sharpest
+step, and an exception search gets whatever sits outside ±2σ. A move made on a
+clicked member also says where that member stood in the chart it was clicked
+in: its level, share, rank and movement. Every figure comes from the engine.
+
+The panel nests each beat under the chart it was made from, like the Map; a
+Timeline switch lists the moves in order instead. The same journal always
+produces the same commentary, and the exported report includes it, as a tree.
 
 An AI sidecar would replace the narration functions only. It could choose among
 operations the semantic model already validated, but it could never aggregate a

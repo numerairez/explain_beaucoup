@@ -85,9 +85,11 @@ metrics:
     describes: revenue / volume - never summed
 
 comparisons:
-  - {name: mom, label: the previous month,   periods: 1}
-  - {name: qoq, label: the previous quarter, months: 3}
-  - {name: yoy, label: the same month last year, years: 1}
+  # {grain} is filled in at the view's own grain: "mom" on a quarterly view
+  # is the previous quarter, so its label must not say "month".
+  - {name: mom, label: "the previous {grain}",        periods: 1}
+  - {name: qoq, label: three months earlier,          months: 3}
+  - {name: yoy, label: "the same {grain} last year",  years: 1}
 
 relationships:
   - kind: volume_rate
