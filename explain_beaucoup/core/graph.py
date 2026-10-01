@@ -15,9 +15,6 @@ from typing import Iterator
 from ..core.context import Context
 from ..core.operations import BREAKDOWN, Operation
 
-_ids = itertools.count(1)
-
-
 @dataclass
 class Node:
     uid: str
@@ -45,13 +42,15 @@ class InvestigationGraph:
         self.roots: list[str] = []
         self.current: str | None = None
         self._branch_seq = itertools.count(1)
+        # Per graph, so two sessions in one process do not share a sequence.
+        self._ids = itertools.count(1)
 
     # -- building ----------------------------------------------------------
 
     def add(self, context: Context, *, kind: str = BREAKDOWN,
             op: Operation | None = None, parent: str | None = None,
             title: str = "", branch: int | None = None) -> Node:
-        uid = f"n{next(_ids)}"
+        uid = f"n{next(self._ids)}"
         if branch is None:
             branch = self.nodes[parent].branch if parent in self.nodes else 0
         node = Node(uid=uid, context=context, kind=kind, op=op, parent=parent,

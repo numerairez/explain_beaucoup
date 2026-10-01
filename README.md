@@ -155,7 +155,9 @@ CHILDREN CHARTS   2 views drilled out of the chart above
 
 | Layer | Module | Responsibility |
 |---|---|---|
-| Interaction | `ui/` | Mark selection, context menus, breadcrumbs, branching, the chart stack |
+| Interaction | `ui/` | Qt widgets: forwards gestures to the session, renders what it says |
+| Session | `core/session.py` | Headless interaction rules: where a result lands, its chart kind, menus, selection, the journal |
+| Chart stack | `view/stack.py` | The stack as JSON-able panels, for any front end |
 | Analytical grammar | `core/operations.py` | Typed verbs over Contexts |
 | Calendar | `core/timegrain.py` | Day / week / month / quarter / year period maths |
 | Semantic model | `semantic/specs.py` | Validates grain, metrics, hierarchies — and *advertises* what is legal |

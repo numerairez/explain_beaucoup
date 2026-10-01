@@ -55,19 +55,19 @@ The largest coupling: the interaction semantics live in the Qt window.
 `IN_PLACE` / `MEMBER_VERBS` / `GROUP_ORDER` tables are all in
 `ui/main_window.py`. Nobody outside Qt can reproduce that behaviour.
 
-- [ ] New `core/session.py`: owns model, engine, graph, per-node selection and
+- [x] New `core/session.py`: owns model, engine, graph, per-node selection and
       chart-kind resolution. Every verb goes through `Session.run(verb, params)`.
-- [ ] Move the kind-resolution rules out of the UI verbatim — `result_kind`,
+- [x] Move the kind-resolution rules out of the UI verbatim — `result_kind`,
       the `PRESERVE_KIND` inheritance, and `Evidence.target_kind` — so the
       chart type a card lands on is decided in one testable place.
-- [ ] `MainWindow` becomes a subscriber: it renders session state and forwards
+- [x] `MainWindow` becomes a subscriber: it renders session state and forwards
       gestures. No analytical decision left in the widget.
-- [ ] **Errors raise.** `_blocked()` currently swallows `SemanticError` into the
+- [x] **Errors raise.** `_blocked()` currently swallows `SemanticError` into the
       status bar; a library must propagate it and let the UI catch. This is the
       correct layering regardless.
-- [ ] Fix the process-global node counter (`_ids` in `core/graph.py`) — two
+- [x] Fix the process-global node counter (`_ids` in `core/graph.py`) — two
       `Workspace` objects in one kernel share a uid sequence today.
-- [ ] Tests: drive a whole investigation through `Session` alone, asserting the
+- [x] Tests: drive a whole investigation through `Session` alone, asserting the
       landing chart kinds that `ui/main_window.py` currently decides.
 
 ## Phase 2 — notebook ergonomics
