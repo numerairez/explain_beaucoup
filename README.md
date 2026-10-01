@@ -467,6 +467,10 @@ in: its level, share, rank and movement. Every figure comes from the engine.
 The panel nests each beat under the chart it was made from, like the Map; a
 Timeline switch lists the moves in order instead. The same journal always
 produces the same commentary, and the exported report includes it, as a tree.
+Before copying, the analyst can remove any beat with its ✕ link. Removed beats
+stay in the panel, struck through, with a link to restore them. Every copy
+format and the exported report leave them out and renumber the steps that
+remain.
 
 An AI sidecar would replace the narration functions only. It could choose among
 operations the semantic model already validated, but it could never aggregate a

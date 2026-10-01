@@ -525,3 +525,51 @@ def test_a_repeat_that_moves_focus_is_told_as_a_return(engine, model):
     j.record(J.RETURN, context=c, kind=BREAKDOWN, uid="c", title="Cmp")
     actions = [b.action for b in Commentary(model, engine, j).beats()]
     assert actions == [J.START, J.OPERATION, J.RETURN, J.RETURN]
+
+
+def test_a_removed_beat_is_left_out_of_every_copy(engine, model):
+    import json
+    c = Commentary(model, engine, _tree_session(model))
+    c.hide(4)                                  # the pin
+    assert [b.seq for b in c.beats()] == [1, 2, 3, 5]
+    assert [b.number for b in c.beats()] == [1, 2, 3, 4]   # no gap
+    assert "Pinned" not in c.markdown(layout="tree")
+    assert "Pinned" not in c.plain()
+    cmp_ = json.loads(c.json())["commentary"][0]["children"][0]
+    assert [ch["step"] for ch in cmp_["children"]] == [3]
+    c.restore(4)
+    assert len(c.beats()) == 5
+
+
+def test_removing_a_chart_lifts_what_was_done_from_it(engine, model):
+    from explain_beaucoup.engine.commentary import TREE
+    c = Commentary(model, engine, _tree_session(model))
+    c.hide(2)                                  # the compare that opened "c"
+    got = [(ln.beat.seq, ln.depth) for ln in c.outline(TREE)]
+    assert got == [(1, 0), (3, 1), (4, 1), (5, 1)]
+
+
+def test_the_panel_keeps_removed_beats_to_restore(engine, model):
+    from explain_beaucoup.view.theme import LIGHT
+    c = Commentary(model, engine, _tree_session(model))
+    c.hide(4)
+    html = c.html(LIGHT, editable=True)
+    assert "href='restore:4'" in html and "href='hide:3'" in html
+    assert "<s>" in html
+    assert "restore:" not in c.html(LIGHT)     # nothing to edit when copied
+    assert "hide:" not in c.html(LIGHT)
+
+
+def test_removing_the_first_reading_retells_it_in_full(engine, model):
+    j = Journal()
+    root = Context.new("sales", "revenue", TimeWindow.single(AUG),
+                       grain=("region",))
+    j.record(J.START, context=root, kind=BREAKDOWN, uid="r", title="Root")
+    c = _op(model, j, root, "drill_down", "d", parent="r",
+            dimension="province", member="Luzon")
+    _op(model, j, c, "change_contribution", "x", parent="d")
+    commentary = Commentary(model, engine, j)
+    assert commentary.beats()[2].answer.endswith("Same reading as #2.")
+    commentary.hide(2)
+    second = commentary.beats()[1]
+    assert second.number == 2 and "Same reading" not in second.answer

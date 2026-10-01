@@ -31,8 +31,7 @@ from ..core.journal import Journal
 from ..core.operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
                                TIMESERIES, Operation, apply, result_kind)
 from ..data.source import DataSource
-from ..engine.commentary import (TIMELINE, TREE, Commentary,
-                                 narrate_commentary)
+from ..engine.commentary import TIMELINE, TREE, Commentary
 from ..engine.engine import AnalyticalEngine, comparison_label
 from ..engine.explain import Evidence, explain
 from ..engine.narrate import (narrate_explanation, narrate_investigation,
@@ -789,8 +788,8 @@ class MainWindow(QMainWindow):
 
     def export_report(self) -> None:
         text = (narrate_investigation(self.model, self.engine, self.graph)
-                + "\n\n" + narrate_commentary(self.model, self.engine,
-                                              self.journal) + "\n")
+                + "\n\n" + self.commentary.markdown(
+                    live=set(), heading="## Commentary", layout=TREE) + "\n")
         path, _ = QFileDialog.getSaveFileName(
             self, "Export investigation", "investigation.md",
             "Markdown (*.md);;All files (*)")
@@ -971,6 +970,15 @@ class MainWindow(QMainWindow):
         copy.setMenu(menu)
         self.commentary_copy = copy
         row.addWidget(copy)
+        # Each beat has a remove link; this brings them all back.
+        restore = QToolButton()
+        restore.setText("Restore all")
+        restore.setToolTip("Bring back every step removed from the "
+                           "commentary.")
+        restore.clicked.connect(lambda: self._restore_commentary(None))
+        restore.setVisible(False)
+        self.commentary_restore = restore
+        row.addWidget(restore)
         row.addStretch(1)
         box.addLayout(row)
         self.commentary_view = QTextBrowser()
@@ -1006,13 +1014,21 @@ class MainWindow(QMainWindow):
         self.journal.record(action, **fields)
         self._refresh_commentary()
 
-    def _refresh_commentary(self) -> None:
+    def _refresh_commentary(self, *, follow: bool = True) -> None:
         view = self.commentary_view
+        # Editing keeps the reader where they were; a new move follows it.
+        scroll = view.verticalScrollBar().value()
         layout = self.commentary_layout.currentData() or TREE
         view.setHtml(self.commentary.html(
-            self.theme, live=set(self.graph.nodes), layout=layout))
+            self.theme, live=set(self.graph.nodes), layout=layout,
+            editable=True))
+        removed = len(self.commentary.hidden)
+        self.commentary_restore.setVisible(bool(removed))
+        self.commentary_restore.setText(f"Restore all ({removed})")
         # The newest beat can sit mid-tree, so follow it rather than the end.
-        if self.journal.entries:
+        if not follow:
+            view.verticalScrollBar().setValue(scroll)
+        elif self.journal.entries:
             view.scrollToAnchor(f"s{self.journal.entries[-1].seq}")
 
     def copy_commentary(self, fmt_: str = "formatted") -> None:
@@ -1026,8 +1042,9 @@ class MainWindow(QMainWindow):
 
         Chart links only work inside the app, so every copy drops them, and
         the rich copy is always in light colours whatever the app's theme.
+        Steps removed in the panel are left out of every format.
         """
-        if not self.journal.entries:
+        if not self.commentary.beats():
             self.statusBar().showMessage("Nothing to copy yet", 3000)
             return
         layout = self.commentary_layout.currentData() or TREE
@@ -1049,8 +1066,18 @@ class MainWindow(QMainWindow):
             f"({shape})", 4000)
 
     def _on_commentary_link(self, url: Any) -> None:
-        if url.scheme() == "node":
+        scheme = url.scheme()
+        if scheme == "node":
             self.raise_node(url.path())
+        elif scheme == "hide":
+            self.commentary.hide(int(url.path()))
+            self._refresh_commentary(follow=False)
+        elif scheme == "restore":
+            self._restore_commentary(int(url.path()))
+
+    def _restore_commentary(self, seq: int | None) -> None:
+        self.commentary.restore(seq)
+        self._refresh_commentary(follow=False)
 
     def _node_title(self, ctx: Context, kind: str) -> str:
         metric = self.model.metric(ctx.metric)

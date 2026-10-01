@@ -82,6 +82,8 @@ class Beat:
     selected: str = ""        # where the clicked member stood, before the move
     parent: str | None = None  # the chart's parent in the map, when recorded
     number: int = 0           # position among the beats actually shown
+    reading: str = ""         # the answer's core, to spot a reading retold
+    hidden: bool = False      # removed by the analyst; left out of copies
 
     @property
     def text(self) -> str:
@@ -892,28 +894,70 @@ class Commentary:
         self.engine = engine
         self.journal = journal
         self._beats: dict[int, Beat | None] = {}
-        self._answers: dict[str, int] = {}      # answer -> number first told
         self._acts: set[tuple] = set()          # actions already narrated
+        self.hidden: set[int] = set()           # seqs the analyst removed
 
-    def beats(self) -> list[Beat]:
+    # -- editing -----------------------------------------------------------
+
+    def hide(self, seq: int) -> None:
+        """Leave a beat out of the commentary and every copy of it."""
+        self.hidden.add(seq)
+
+    def restore(self, seq: int | None = None) -> None:
+        """Bring back one removed beat, or all of them."""
+        if seq is None:
+            self.hidden.clear()
+        else:
+            self.hidden.discard(seq)
+
+    # -- beats -------------------------------------------------------------
+
+    def beats(self, *, include_hidden: bool = False) -> list[Beat]:
         """The beats worth showing, numbered in order.
 
         The journal is append-only, so each beat is settled once, against the
         beats before it: that is what lets it drop repetition and stay
-        deterministic.
+        deterministic. Numbering, and pointing back to a reading already
+        told, happen here instead, over the beats not removed - so taking a
+        beat out never leaves a gap or a reference to a step that is gone.
+        Removed beats come back, unnumbered, only with `include_hidden`.
         """
-        out: list[Beat] = []
-        prev: JournalEntry | None = None
+        settled: list[Beat] = []
         for entry in self.journal:
             if entry.seq not in self._beats:
-                self._beats[entry.seq] = self._settle(entry, prev, out)
+                self._beats[entry.seq] = self._settle(entry, settled)
             beat = self._beats[entry.seq]
             if beat is not None:
-                out.append(beat)
-            prev = entry
+                settled.append(beat)
+        out: list[Beat] = []
+        shown: Beat | None = None
+        readings: dict[str, int] = {}           # reading -> number first told
+        for beat in settled:
+            if beat.seq in self.hidden:
+                if include_hidden:
+                    out.append(dataclasses.replace(beat, hidden=True))
+                continue
+            beat = dataclasses.replace(beat, number=(shown.number + 1
+                                                     if shown else 1))
+            # Clicking the same member twice in a row does not need its
+            # standing told twice.
+            if beat.selected and shown and shown.selected == beat.selected:
+                beat = dataclasses.replace(beat, selected="")
+            # The same reading reached by a different move is pointed back
+            # to, not retold in full.
+            if beat.reading:
+                first = readings.get(beat.reading)
+                if first is not None:
+                    lead = beat.reading.split(". ")[0].rstrip(".")
+                    beat = dataclasses.replace(
+                        beat, answer=f"{lead}. Same reading as #{first}.")
+                else:
+                    readings[beat.reading] = beat.number
+            shown = beat
+            out.append(beat)
         return out
 
-    def _settle(self, entry: JournalEntry, prev: JournalEntry | None,
+    def _settle(self, entry: JournalEntry,
                 told: list[Beat]) -> Beat | None:
         # Raising the chart the commentary was just talking about is how the
         # UI moves on, not a step in the investigation.
@@ -928,27 +972,15 @@ class Commentary:
                 return None
             self._acts.add(act)
         beat = narrate_entry(self.model, self.engine, entry)
-        beat = dataclasses.replace(beat, number=len(told) + 1)
-        # Clicking the same member twice in a row does not need its standing
-        # told twice.
-        if beat.selected and told and told[-1].selected == beat.selected:
-            beat = dataclasses.replace(beat, selected="")
-        # The same reading reached by a different move is pointed back to, not
-        # retold in full.
         if beat.question and beat.answer:
-            core = _IMPLIED.sub("", beat.answer).strip()
-            first = self._answers.get(core)
-            if first is not None:
-                lead = core.split(". ")[0].rstrip(".")
-                beat = dataclasses.replace(
-                    beat, answer=f"{lead}. Same reading as #{first}.")
-            else:
-                self._answers[core] = beat.number
+            beat = dataclasses.replace(
+                beat, reading=_IMPLIED.sub("", beat.answer).strip())
         return beat
 
     # -- layout ------------------------------------------------------------
 
-    def outline(self, layout: str = TREE) -> list[Line]:
+    def outline(self, layout: str = TREE, *,
+                include_hidden: bool = False) -> list[Line]:
         """The beats as display lines.
 
         TIMELINE is the journal in order. TREE follows the investigation map:
@@ -956,10 +988,15 @@ class Commentary:
         chart - the views drilled out of it, and the pins, returns and
         explanations made on it - sits one level beneath, in the order it
         happened. Step numbers keep the chronology readable across branches.
+
+        The tree is built over removed beats too, so taking out the move that
+        opened a chart lifts what was done from it up a level rather than
+        cutting it loose from the map.
         """
-        beats = self.beats()
+        beats = self.beats(include_hidden=True)
         if layout == TIMELINE:
-            return [Line(0, b, True) for b in beats]
+            return [Line(0, b, True) for b in beats
+                    if include_hidden or not b.hidden]
         heads: dict[str, Beat] = {}
         under: dict[str | None, list[tuple[str, Beat]]] = {None: []}
         for beat in beats:
@@ -975,9 +1012,11 @@ class Commentary:
 
         def walk(key: str | None, depth: int) -> None:
             for role, beat in under.get(key, []):
-                out.append(Line(depth, beat, role == "node"))
+                drop = beat.hidden and not include_hidden
+                if not drop:
+                    out.append(Line(depth, beat, role == "node"))
                 if role == "node":
-                    walk(beat.uid, depth + 1)
+                    walk(beat.uid, depth if drop else depth + 1)
 
         walk(None, 0)
         return out
@@ -1004,11 +1043,17 @@ class Commentary:
         return "\n".join(lines).rstrip() + "\n"
 
     def html(self, theme: Any, *, live: set[str] | None = None,
-             layout: str = TREE, indent: int = 18) -> str:
+             layout: str = TREE, indent: int = 18,
+             editable: bool = False) -> str:
         """The commentary for the in-app panel: indented like the map, with
-        the newest beat marked so it can be found in a deep tree."""
+        the newest beat marked so it can be found in a deep tree.
+
+        `editable` gives each beat a `hide:<seq>` link and keeps removed
+        beats on show - struck through, with a `restore:<seq>` link - so the
+        analyst can see what a copy will leave out and change their mind.
+        """
         t = theme
-        rows = self.outline(layout)
+        rows = self.outline(layout, include_hidden=editable)
         if not rows:
             return (f"<p style='color:{t.muted}'><i>Nothing investigated "
                     f"yet.</i></p>")
@@ -1024,6 +1069,20 @@ class Commentary:
                     "· " if not line.head else ""
             bg = f"background-color:{t.plane};" if b.seq == newest else ""
             weight = "600" if line.head else "400"
+            if b.hidden:
+                out.append(
+                    f"<a name='s{b.seq}'></a>"
+                    f"<p style='margin-left:{pad}px; margin-top:"
+                    f"{10 if line.head else 4}px; margin-bottom:0;"
+                    f" color:{t.muted}; {bg}'>{glyph}"
+                    f"<s>{_html(_plain(b.move), t)}</s> "
+                    f"<a href='restore:{b.seq}' style='color:{t.series[0]};"
+                    f" text-decoration:none'>restore</a></p>")
+                continue
+            edit = (f" <a href='hide:{b.seq}' title='Remove from the "
+                    f"commentary' style='color:{t.critical};"
+                    f" text-decoration:none'>&#x2715;</a>"
+                    if editable else "")
             head = _html(_live(b, b.move, live), t)
             sel = (" <span style='font-weight:400'>"
                    f"{_html(_live(b, b.selected, live), t)}</span>"
@@ -1033,7 +1092,8 @@ class Commentary:
                 f"<p style='margin-left:{pad}px; margin-top:"
                 f"{10 if line.head else 4}px; margin-bottom:0; {bg}'>"
                 f"<span style='color:{t.muted}'>{glyph}#{b.number}</span> "
-                f"<span style='font-weight:{weight}'>{head}</span>{sel}</p>")
+                f"<span style='font-weight:{weight}'>{head}</span>{sel}"
+                f"{edit}</p>")
             if b.question or b.answer:
                 q = f"<i>{_html(b.question, t)}</i> " if b.question else ""
                 a = _html(_live(b, b.answer, live), t)
