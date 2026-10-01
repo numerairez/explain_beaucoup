@@ -312,6 +312,33 @@ def test_ratio_metrics_hold_on_a_new_dataset(clinic):
     assert all(r.share is None for r in res.rows)
 
 
+def test_a_count_without_a_column_counts_rows(clinic_frame, tmp_path):
+    doc = yaml.safe_load(CLINIC_MODEL)
+    doc["metrics"]["records"] = {"label": "Records", "kind": "count"}
+    doc["metrics"]["cost_per_record"] = {
+        "label": "Cost per Record", "kind": "ratio", "format": "currency",
+        "numerator": "cost_gbp", "denominator": "records"}
+    model, source = build(doc, tmp_path, frame=clinic_frame)
+    assert not [i for i in check(model, source) if i.level == "error"]
+
+    engine = AnalyticalEngine(source, model)
+    dates = pd.to_datetime(clinic_frame["appt_date"], format="%d/%m/%Y")
+    june = clinic_frame[dates.dt.month == 6]
+    window = TimeWindow.single("2026-06", "month")
+
+    res = engine.execute(Context.new("clinic", "records", window,
+                                     grain=("specialty",)))
+    assert res.total == len(june)
+    for row in res.rows:
+        assert row.value == (june.specialty == row.key).sum()
+
+    res = engine.execute(Context.new("clinic", "cost_per_record", window,
+                                     grain=("area",)))
+    for row in res.rows:
+        sub = june[june.area == row.key]
+        assert row.value == pytest.approx(sub.cost_gbp.sum() / len(sub))
+
+
 def test_explain_finds_a_story_it_was_never_told_about(clinic):
     """The planted collapse is in Dermatology - nothing in the framework
     knows that word."""

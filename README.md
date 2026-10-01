@@ -280,6 +280,12 @@ drifting apart.
   the engine sums the numerator and the denominator, *then* divides. It is
   never summed and never averaged. Share-of-total is withheld on ratios as
   meaningless, and the result carries a note saying so.
+* **A row count is just another metric.** A `kind: count` metric with no
+  `column` counts fact rows: every source carries a constant `__rows__` column
+  of 1s, so the count sums, filters, compares and drills like any additive
+  metric, and a ratio can name it as a denominator (`revenue / records`). It
+  counts rows, not events — on pre-aggregated data it counts cells. Distinct
+  counts are not additive and are not supported this way.
 * **Structural drill must follow the hierarchy** — and hierarchy walks step
   *past* single-member levels rather than stalling on them, so a one-country
   dataset does not hide its whole geography hierarchy.

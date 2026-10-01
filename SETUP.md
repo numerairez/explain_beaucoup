@@ -106,6 +106,7 @@ metrics:
     symbol: "£"
     column: gross_sales
   orders: {label: Orders, kind: count, format: number, column: orders}
+  records: {label: Records, kind: count}   # no column: counts rows
 
   discount_rate:               # a ratio is declared from its components
     label: Discount Rate
@@ -137,6 +138,7 @@ defaults:
 | `dimensions.*.cell` | Marks the finest addressable cell — what a distribution is a population *of*. Defaults to each hierarchy's leaf plus every standalone dimension. |
 | `hierarchies.*.levels` | Coarse to fine. This is what enables structural drill (Country → Region). Without it, dimensional breakdown still works. |
 | `metrics.*.kind: ratio` | Recomputed from components at every grain, never summed. Share-of-total is withheld because it is meaningless for a ratio. |
+| `metrics.*.kind: count` | With a `column`, sums that column. Without one, counts the fact rows in scope — one row, one unit. A ratio may use the count's name as its `numerator` or `denominator`. On pre-aggregated data this counts cells, not events; distinct counts (unique customers) are not supported. |
 | `metrics.*.higher_is_better` | Whether a rise is good. Drives the up/down colouring. |
 | `comparisons.*` | `periods` (of the context's own grain), `months`, or `years`. A comparison that would overlap the window being analysed is refused. |
 | `relationships` | Declares `metric = volume x rate`, which unlocks volume-vs-rate decomposition in the explain engine. It is never assumed. |

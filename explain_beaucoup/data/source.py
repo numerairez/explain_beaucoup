@@ -24,6 +24,12 @@ READERS = {
 }
 
 
+# A constant 1 per fact row. Summed like any column, it gives the row count,
+# so "how many rows" is an ordinary additive metric (and a valid ratio
+# denominator) without the engine knowing it is special.
+ROW_COUNT = "__rows__"
+
+
 class DataSourceError(Exception):
     pass
 
@@ -126,6 +132,8 @@ class DataSource:
             raise DataSourceError(
                 f"Every value in time column '{time_column}' failed to parse.")
         grain = native_grain or tg.detect_grain(ts)
+        if ROW_COUNT not in frame.columns:
+            frame = frame.assign(**{ROW_COUNT: 1})
         return DataSource(frame=frame, time_column=time_column, timestamps=ts,
                           native_grain=tg.check_grain(grain), name=name)
 

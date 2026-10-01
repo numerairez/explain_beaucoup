@@ -7,6 +7,7 @@ wrong when it doesn't line up with their data.
 
 from __future__ import annotations
 
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -15,7 +16,8 @@ import pandas as pd
 import yaml
 
 from ..core import timegrain as tg
-from ..data.source import DataSource, DataSourceError, profile_frame, read_table
+from ..data.source import (ROW_COUNT, DataSource, DataSourceError,
+                           profile_frame, read_table)
 from .specs import (DEFAULT_COMPARISONS, ComparisonSpec, DimensionSpec,
                     Hierarchy, MetricSpec, RelationshipSpec, SemanticModel)
 
@@ -137,8 +139,12 @@ def build_metrics(doc: dict) -> dict[str, MetricSpec]:
                     f"{where}: a ratio metric needs both 'numerator' and "
                     f"'denominator' columns, so it can be recomputed at every "
                     f"grain instead of summed")
+        elif kind == "count" and not body.get("column"):
+            # No column to sum: the metric is the number of fact rows.
+            body = {**body, "column": ROW_COUNT}
         elif not body.get("column"):
-            raise ModelError(f"{where}: needs a 'column' (or kind: ratio)")
+            raise ModelError(f"{where}: needs a 'column' (or kind: ratio, "
+                             f"or kind: count to count rows)")
         metrics[name] = MetricSpec(
             name=name,
             label=body.get("label", name.replace("_", " ").title()),
@@ -156,6 +162,16 @@ def build_metrics(doc: dict) -> dict[str, MetricSpec]:
         )
     if not metrics:
         raise ModelError("metrics: at least one metric is required")
+    # A ratio may name a row-count metric (e.g. revenue per record); it has
+    # no column of its own, so point the ratio at the row column instead.
+    rows = {n for n, m in metrics.items() if m.column == ROW_COUNT}
+    for name, m in metrics.items():
+        if m.is_ratio and (m.numerator in rows or m.denominator in rows):
+            metrics[name] = dataclasses.replace(
+                m,
+                numerator=ROW_COUNT if m.numerator in rows else m.numerator,
+                denominator=ROW_COUNT if m.denominator in rows
+                else m.denominator)
     return metrics
 
 
@@ -446,6 +462,12 @@ def scaffold(frame: pd.DataFrame, data_path: str, *, dataset: str,
         "  #   format: percent",
         "  #   numerator: margin",
         "  #   denominator: revenue",
+        "",
+        "  # A count with no column counts fact rows:",
+        "  #",
+        "  # records:",
+        "  #   label: Records",
+        "  #   kind: count",
         "",
         "comparisons:",
         f"  - {{name: prev, label: previous {grain}, periods: 1}}",
