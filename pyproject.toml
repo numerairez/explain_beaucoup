@@ -13,7 +13,8 @@ dependencies = [
 [project.optional-dependencies]
 parquet = ["pyarrow>=15"]
 excel = ["openpyxl>=3.1"]
-dev = ["pytest>=8.0"]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
+dev = ["pytest>=8.0", "httpx>=0.27"]
 
 [project.scripts]
 explain-beaucoup = "explain_beaucoup.cli:main"
@@ -26,4 +27,5 @@ build-backend = "setuptools.build_meta"
 include = ["explain_beaucoup*"]
 
 [tool.setuptools.package-data]
-explain_beaucoup = ["ui/web/*.html", "ui/web/vendor/*.js", "data/*.csv.gz"]
+explain_beaucoup = ["ui/web/*.html", "ui/web/vendor/*.js", "data/*.csv.gz",
+                    "web/static/*", "web/static/assets/*"]

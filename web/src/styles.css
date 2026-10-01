@@ -1,0 +1,147 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* Design tokens. Light and dark are each chosen, not flipped - the same
+   intent as view/theme.py, warmed slightly for a full-page surface. */
+:root {
+  --paper: #f4f3ee;
+  --surface: #fdfdfb;
+  --raised: #ffffff;
+  --sunken: #efeee8;
+  --ink: #121211;
+  --ink-2: #4f4d48;
+  --muted: #8a8882;
+  --line: rgba(18, 18, 17, 0.08);
+  --line-strong: rgba(18, 18, 17, 0.14);
+  --accent: #2f6f4f;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(47, 111, 79, 0.09);
+  --pos: #2a78d6;
+  --neg: #d64545;
+  --good: #1d8a4a;
+  --critical: #c93a3a;
+  --offset: #e0662f;
+  --link: #5a46c4;
+  --hilite: rgba(47, 111, 79, 0.07);
+  --shadow-sm: 0 1px 2px rgba(18, 18, 17, 0.04), 0 1px 1px rgba(18, 18, 17, 0.03);
+  --shadow-md: 0 1px 2px rgba(18, 18, 17, 0.04), 0 6px 20px -6px rgba(18, 18, 17, 0.10);
+  --shadow-lg: 0 2px 4px rgba(18, 18, 17, 0.04), 0 24px 48px -12px rgba(18, 18, 17, 0.18);
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  --paper: #0b0b0a;
+  --surface: #151514;
+  --raised: #1c1c1a;
+  --sunken: #10100f;
+  --ink: #f3f2ec;
+  --ink-2: #c1bfb6;
+  --muted: #85837c;
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.13);
+  --accent: #8fd0ad;
+  --accent-ink: #0b0b0a;
+  --accent-soft: rgba(143, 208, 173, 0.10);
+  --pos: #5a9cee;
+  --neg: #ec7272;
+  --good: #4cc27a;
+  --critical: #ec6b6b;
+  --offset: #ef8550;
+  --link: #a598f2;
+  --hilite: rgba(143, 208, 173, 0.07);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 1px 2px rgba(0, 0, 0, 0.4), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 2px 4px rgba(0, 0, 0, 0.5), 0 24px 56px -12px rgba(0, 0, 0, 0.7);
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, Menlo, monospace;
+  --color-paper: var(--paper);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-ink: var(--ink);
+  --color-ink-2: var(--ink-2);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-pos: var(--pos);
+  --color-neg: var(--neg);
+  --color-good: var(--good);
+  --color-critical: var(--critical);
+  --color-offset: var(--offset);
+  --color-link: var(--link);
+  --color-hilite: var(--hilite);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+}
+
+html, body, #root { height: 100%; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  font-feature-settings: "cv11", "ss01", "ss03";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: var(--accent-soft); }
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* Quiet scrollbars that only show their thumb. */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+
+/* The framework owns menus; Vega's own action menu stays off. */
+.vega-embed summary, .vega-embed .vega-actions { display: none !important; }
+.vega-embed { width: 100%; display: block !important; }
+.vega-embed svg { overflow: visible; }
+
+/* Vega's tooltip, restyled to the tokens. */
+#vg-tooltip-element {
+  font-family: var(--font-sans) !important;
+  font-size: 12px !important;
+  background: var(--raised) !important;
+  color: var(--ink) !important;
+  border: 1px solid var(--line-strong) !important;
+  border-radius: 10px !important;
+  box-shadow: var(--shadow-lg) !important;
+  padding: 8px 10px !important;
+}
+#vg-tooltip-element table tr td.key { color: var(--muted) !important; }
+/* A menu or the palette is the conversation now; the hover tooltip yields. */
+body:has([data-floating]) #vg-tooltip-element { visibility: hidden !important; }
+
+/* Floating layers share one entrance. */
+@keyframes pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.pop { animation: pop-in 140ms cubic-bezier(0.2, 0.8, 0.2, 1); transform-origin: var(--radix-dropdown-menu-content-transform-origin, top); }
+
+@keyframes shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.busy-bar::after {
+  content: ""; position: absolute; inset: 0; width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: shimmer 0.9s ease-in-out infinite;
+}
+
+/* Resize handles: a hairline that thickens on intent. */
+[data-separator] { position: relative; width: 1px; background: var(--line); transition: background 120ms; }
+[data-separator]::after { content: ""; position: absolute; inset: 0 -4px; }
+[data-separator="hover"], [data-separator="active"], [data-separator="focus"] { background: var(--accent); }

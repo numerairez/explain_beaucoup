@@ -193,6 +193,41 @@ def launch(model_path: Path | None = None, *,
     return app.exec()
 
 
+def cmd_web(args: argparse.Namespace) -> int:
+    """Serve the React workspace on localhost."""
+    try:
+        import uvicorn
+    except ImportError:
+        print(_paint("error: the web workspace needs its extras - "
+                     "pip install -e '.[web]'", RED), file=sys.stderr)
+        return 2
+    from .semantic.catalog import default_models_dir
+    from .semantic.loader import ModelError, load_model_file
+    from .web.server import STATIC, create_app
+
+    preload = None
+    if args.model:
+        try:
+            preload = load_model_file(Path(args.model))
+        except ModelError as exc:
+            print(_paint(f"error: {exc}", RED), file=sys.stderr)
+            return 2
+    models_dir = Path(args.models) if args.models else default_models_dir()
+    app = create_app(models_dir, preload=preload)
+    url = f"http://{args.host}:{args.port}"
+    if not (STATIC / "index.html").exists():
+        print(_paint("The client is not built yet: cd web && npm install && "
+                     "npm run build   (or `npm run dev` beside this server)",
+                     RED), file=sys.stderr)
+    print(f"Explain Beaucoup on {_paint(url, BOLD)}  ·  Ctrl+C to stop")
+    if not args.no_browser:
+        import threading
+        import webbrowser
+        threading.Timer(0.8, lambda: webbrowser.open(url)).start()
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    return 0
+
+
 def _relative(target: Path, start: Path) -> str:
     try:
         return str(target.relative_to(start))
@@ -232,6 +267,17 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--models", help="folder of models the picker lists "
                                     "(default: ./models)")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("web", help="serve the workspace in the browser")
+    p.add_argument("model", nargs="?",
+                   help="a model file; omit it to choose one in the browser")
+    p.add_argument("--models", help="folder of models the picker lists "
+                                    "(default: ./models)")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--no-browser", action="store_true",
+                   help="do not open a browser tab")
+    p.set_defaults(func=cmd_web)
     return ap
 
 

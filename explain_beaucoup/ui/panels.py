@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QListWidget,
                              QVBoxLayout, QWidget)
 
 from ..core.graph import InvestigationGraph, Node
+from ..core.session import crumb
 from ..engine.engine import ResultHandle
 from ..engine.explain import Evidence, ExplanationResult
 from ..semantic.specs import SemanticModel
@@ -172,34 +173,8 @@ class BreadcrumbBar(QWidget):
         self.box.addStretch(1)
 
 
-KIND_CRUMB = {"change_contribution": "what moved", "exceptions": "exceptions",
-              "distribution": "distribution"}
-
-
 def _crumb_text(model: SemanticModel, node: Node) -> str:
-    """Name what the step *did*, so two nodes at the same grain don't read as
-    the same crumb."""
-    ctx = node.context
-    op = node.op
-    if op and op.param_map.get("member"):
-        return str(op.param_map["member"])
-    if node.kind in KIND_CRUMB:
-        return KIND_CRUMB[node.kind]
-    if op and op.verb == "set_grain":
-        return f"by {ctx.time.grain}"
-    if op and op.verb == "compare":
-        return f"vs {str(op.param_map.get('period', '')).upper()}"
-    if op and op.verb == "clear_comparison":
-        return "no comparison"
-    if op and op.verb == "switch_metric":
-        return model.metric(ctx.metric).label
-    if op and op.verb == "set_time":
-        return ctx.time.label
-    if ctx.grain:
-        g = ctx.grain[0]
-        return ("Trend" if g == model.time_column
-                else f"by {model.label_of(g)}")
-    return model.metric(ctx.metric).label
+    return crumb(model, node)
 
 
 # --------------------------------------------------------------------------

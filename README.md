@@ -14,6 +14,25 @@ python3 -m venv .venv && .venv/bin/pip install -e .      # Python 3.10+
 .venv/bin/explain-beaucoup run models/sales.yaml       # or straight into the demo
 ```
 
+## The web workspace
+
+The same workspace also runs in the browser, built with React and served
+locally by a small FastAPI layer over the headless `core/session.py`. It has
+the same interaction rules, the same numbers and the same commentary.
+
+```bash
+.venv/bin/pip install -e '.[web]'
+(cd web && npm install && npm run build)    # builds into explain_beaucoup/web/static
+.venv/bin/explain-beaucoup web               # opens http://127.0.0.1:8765
+.venv/bin/explain-beaucoup web models/sales.yaml --no-browser
+```
+
+For frontend work, run `explain-beaucoup web --no-browser` and `npm run dev`
+side by side. Vite serves on :5173 and proxies `/api` to the server.
+
+Keys: `⌘K` command palette · `E` explain · `P` pin · `U` drill up ·
+`[` back · `B` branch · `D` dark mode.
+
 ## Use it with your own data
 
 The framework is not built around the demo dataset. Everything — drill paths,

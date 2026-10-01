@@ -54,6 +54,8 @@ LENSES = {
     "Distribution": (DISTRIBUTION, "distribution"),
 }
 LENS_OF_KIND = {kind: lens for lens, (kind, _) in LENSES.items()}
+KIND_CRUMB = {CHANGE: "what moved", EXCEPTIONS: "exceptions",
+              DISTRIBUTION: "distribution"}
 
 
 @dataclass(frozen=True)
@@ -598,6 +600,9 @@ class Session:
                 f"fact rows in {res.computed_ms:.0f} ms   ·   cache "
                 f"{self.engine.cache_size()}")
 
+    def crumb(self, node: Node) -> str:
+        return crumb(self.model, node)
+
     def node_title(self, ctx: Context, kind: str) -> str:
         metric = self.model.metric(ctx.metric)
         if kind == TIMESERIES:
@@ -652,6 +657,32 @@ class Session:
         entry = self.journal.record(action, **fields)
         for listener in self.journal_listeners:
             listener(entry)
+
+
+def crumb(model: SemanticModel, node: Node) -> str:
+    """Name what the step *did*, so two nodes at the same grain don't read
+    as the same crumb."""
+    ctx = node.context
+    op = node.op
+    if op and op.param_map.get("member"):
+        return str(op.param_map["member"])
+    if node.kind in KIND_CRUMB:
+        return KIND_CRUMB[node.kind]
+    if op and op.verb == "set_grain":
+        return f"by {ctx.time.grain}"
+    if op and op.verb == "compare":
+        return f"vs {str(op.param_map.get('period', '')).upper()}"
+    if op and op.verb == "clear_comparison":
+        return "no comparison"
+    if op and op.verb == "switch_metric":
+        return model.metric(ctx.metric).label
+    if op and op.verb == "set_time":
+        return ctx.time.label
+    if ctx.grain:
+        g = ctx.grain[0]
+        return ("Trend" if g == model.time_column
+                else f"by {model.label_of(g)}")
+    return model.metric(ctx.metric).label
 
 
 def _member_label(verb: str, label: str, key: str) -> str:
