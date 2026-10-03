@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..core.graph import Node
-from ..core.session import LENSES, Session
+from ..core.session import LENSES, Session, lands
 from ..engine.commentary import TREE
 from ..engine.explain import Evidence, ExplanationResult
 from ..engine.narrate import narrate_investigation, suggested_questions
@@ -53,7 +53,7 @@ def snapshot(session: Session, *, theme: str = "light",
         "tree": [tree_item(session, r) for r in session.graph.roots],
         "pins": pins(session),
         "context": context(session, node, res),
-        "questions": [{"text": t, "verb": v, "params": p}
+        "questions": [{"text": t, "verb": v, "params": p, "lands": lands(v)}
                       for t, v, p in suggested_questions(model, node)],
         "explanation": (explanation(session, session.last_explanation)
                         if session.last_explanation else None),

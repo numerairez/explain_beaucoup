@@ -126,3 +126,12 @@ def test_commentary_can_be_edited_and_copied(client, sid):
 def test_export_and_unknown_sessions(client, sid):
     assert client.get(f"/api/sessions/{sid}/export").text.startswith("# Investigation")
     assert client.get("/api/sessions/nope").status_code == 404
+
+
+def test_next_questions_say_where_they_land(client, sid):
+    qs = client.get(f"/api/sessions/{sid}").json()["questions"]
+    lands = {q["verb"]: q["lands"] for q in qs}
+    assert lands["compare"] == "replace" and lands["drill_down"] == "below"
+    assert lands["explain"] == ""
+    r = move(client, sid, type="run", verb="compare", params={"period": "mom"})
+    assert r["message"].startswith("Replaced the top chart")

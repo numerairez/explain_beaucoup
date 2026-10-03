@@ -3,6 +3,7 @@ import { ArrowUpRight, ChevronRight, GitBranch, Pin, Sparkles, X } from "lucide-
 import type { ReactNode } from "react";
 import type { MenuItem } from "../api";
 import { useWorkspace } from "../store";
+import { LandsMark } from "../ui";
 
 const content =
   "pop z-50 min-w-[248px] max-w-[340px] overflow-hidden rounded-xl border border-line bg-raised p-1 shadow-lg outline-none";
@@ -63,6 +64,7 @@ export function MarkMenu() {
       <DM.Item key={i} className={row} onSelect={() => run(item)} title={item.hint || undefined}>
         {iconFor(item)}
         <span className="flex-1 leading-snug">{item.label}</span>
+        <LandsMark lands={item.lands} />
       </DM.Item>
     );
 
@@ -83,6 +85,10 @@ export function MarkMenu() {
           <div className="px-2.5 pt-2 pb-1.5">
             <div className="truncate text-[12.5px] font-semibold text-ink tabular">{m.heading}</div>
             {m.note && <div className="mt-0.5 text-[11px] leading-snug text-muted">{m.note}</div>}
+            <div className="mt-1 flex items-center gap-3">
+              <LandsMark lands="below" label />
+              <LandsMark lands="replace" label />
+            </div>
           </div>
           {m.groups.map((group, gi) => {
             const plain = group.filter((it) => !it.submenu);
@@ -102,7 +108,8 @@ export function MarkMenu() {
                       <DM.SubContent className={content} sideOffset={4}>
                         {nested.map((it, i) => (
                           <DM.Item key={i} className={row} onSelect={() => run(it)}>
-                            {it.label}
+                            <span className="flex-1">{it.label}</span>
+                            <LandsMark lands={it.lands} />
                           </DM.Item>
                         ))}
                       </DM.SubContent>

@@ -73,7 +73,8 @@ class MenuItem:
 
     `action` is "run" for an analytical verb, otherwise a session action:
     "raise", "close", "branch" or "pin". `submenu` names the nested menu the
-    item belongs in, if any.
+    item belongs in, if any. `lands` says where a verb's result goes - see
+    `lands()` - so a front end can show it before the move is made.
     """
     label: str
     action: str = "run"
@@ -83,6 +84,7 @@ class MenuItem:
     source: str = "ui"
     hint: str = ""
     submenu: str = ""
+    lands: str = ""
 
 
 @dataclass(frozen=True)
@@ -199,7 +201,18 @@ class Session:
 
         if in_place or node.parent != parent_uid or parent_uid is None:
             self.graph.current = node.uid
-            return Landing(node, reused, below=False)
+            message = ""
+            if in_place and parent_uid is not None and node.uid != parent_uid:
+                # A re-framing takes the top slot, so say so - and how to get
+                # back - rather than let the chart it replaced vanish silently.
+                back = self.graph.get(node.parent).title if node.parent else ""
+                # A comparison or period keeps the title, so name the change.
+                what = crumb(self.model, node)
+                head = (node.title if what.lower() in node.title.lower()
+                        else f"{node.title} — {what}")
+                message = (f"Replaced the top chart: {head}"
+                           + (f"   ·   ↑ Parent goes back to {back}" if back else ""))
+            return Landing(node, reused, below=False, message=message)
 
         # The mother keeps the top slot; the new view opens under it.
         self.graph.current = parent_uid
@@ -533,7 +546,8 @@ class Session:
                 items.append(MenuItem(
                     label, verb=cap.verb, params=dict(cap.param_map),
                     member=key, source=source, hint=cap.hint or "",
-                    submenu="Switch metric" if nested else ""))
+                    submenu="Switch metric" if nested else "",
+                    lands=lands(cap.verb)))
             if items:
                 groups.append(items)
 
@@ -543,7 +557,8 @@ class Session:
             if dim and dim != self.model.time_column:
                 tail.append(MenuItem(
                     f"Focus on {key} (keep this grain)", verb="focus",
-                    params={"dimension": dim, "member": key}, source=source))
+                    params={"dimension": dim, "member": key}, source=source,
+                    lands=lands("focus")))
         if below:
             tail.append(MenuItem("Raise this chart to the top", action="raise"))
             tail.append(MenuItem("Close this chart", action="close"))
@@ -657,6 +672,14 @@ class Session:
         entry = self.journal.record(action, **fields)
         for listener in self.journal_listeners:
             listener(entry)
+
+
+def lands(verb: str) -> str:
+    """Where a verb's result goes on the stack: "replace" takes the top slot,
+    "below" opens under the chart on top, "" is not a chart at all."""
+    if verb == "explain":
+        return ""
+    return "replace" if verb in IN_PLACE else "below"
 
 
 def crumb(model: SemanticModel, node: Node) -> str:

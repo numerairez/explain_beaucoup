@@ -6,7 +6,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import type { Menu, Move, TreeItem } from "../api";
 import { useWorkspace } from "../store";
-import { Kbd } from "../ui";
+import { Kbd, LandsMark } from "../ui";
 
 const itemCls =
   "flex cursor-default items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] text-ink outline-none select-none data-[selected=true]:bg-sunken";
@@ -62,6 +62,7 @@ export function Palette() {
                       {i.verb === "explain" ? <Sparkles className="size-4 text-accent" /> : <Compass className="size-4 text-muted" />}
                       <span className="flex-1">{i.submenu ? `Switch metric to ${i.label}` : i.label}</span>
                       {i.hint && <span className="max-w-56 truncate text-[11px] text-muted">{i.hint}</span>}
+                      <LandsMark lands={i.lands} />
                     </Command.Item>
                   ))}
                 </Command.Group>
@@ -73,6 +74,7 @@ export function Palette() {
                     <Layers className="size-4 text-muted" />
                     <span className="flex-1">Read as {l.label.toLowerCase()}</span>
                     {t.lens === l.value && <Current />}
+                    <LandsMark lands="below" />
                   </Command.Item>
                 ))}
               </Command.Group>
@@ -83,6 +85,7 @@ export function Palette() {
                     <Compass className="size-4 text-muted" />
                     <span className="flex-1">{c.value ? `Compare with ${c.hint}` : "No comparison"}</span>
                     {t.comparison === c.value && <Current />}
+                    <LandsMark lands="replace" />
                   </Command.Item>
                 ))}
               </Command.Group>

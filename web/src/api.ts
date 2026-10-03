@@ -102,7 +102,7 @@ export type Snapshot = {
     notes: string[];
     lineage: { verb: string; summary: string; source: string }[];
   };
-  questions: { text: string; verb: string; params: Record<string, unknown> }[];
+  questions: { text: string; verb: string; params: Record<string, unknown>; lands: Lands }[];
   explanation: Explanation | null;
   commentary: { layout: Layout; lines: BeatLine[]; newest: number | null; removed: number };
   report: string;
@@ -118,7 +118,11 @@ export type MenuItem = {
   source: string;
   hint: string;
   submenu: string;
+  lands: Lands;
 };
+
+/** Where a move's result goes: under the chart on top, or in its place. */
+export type Lands = "below" | "replace" | "";
 
 export type Menu = { uid: string; heading: string; note: string; groups: MenuItem[][] };
 

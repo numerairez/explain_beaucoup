@@ -9,7 +9,7 @@ import type { BeatLine, Evidence } from "../api";
 import { Inline, Markdown } from "../md";
 import { useWorkspace } from "../store";
 import type { RightTab } from "../store";
-import { cn, Empty, SectionLabel, Segmented } from "../ui";
+import { cn, Empty, LandsMark, SectionLabel, Segmented } from "../ui";
 import { TabList } from "./LeftPanel";
 
 export function RightPanel() {
@@ -309,7 +309,14 @@ function NextTab() {
             onClick={() => act({ type: "run", verb: q.verb, params: q.params, source: "next" })}
             className="group flex w-full items-center gap-3 rounded-xl border border-line bg-raised px-3.5 py-2.5 text-left shadow-sm transition-all hover:-translate-y-px hover:border-line-strong hover:shadow-md"
           >
-            <span className="flex-1 text-[12.5px] leading-snug text-ink">{q.text}</span>
+            <span className="flex-1">
+              <span className="block text-[12.5px] leading-snug text-ink">{q.text}</span>
+              {q.lands && (
+                <span className="mt-0.5 block">
+                  <LandsMark lands={q.lands} label />
+                </span>
+              )}
+            </span>
             <ArrowRight className="size-3.5 shrink-0 text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-accent" />
           </motion.button>
         ))}

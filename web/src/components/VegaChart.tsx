@@ -46,6 +46,21 @@ function dress(spec: Record<string, unknown>): Record<string, unknown> {
   return { ...spec, config };
 }
 
+type Signal = { name: string; on?: { events: unknown; update?: string }[] };
+
+/** Vega-Lite re-measures a `width: "container"` chart on `window:resize`
+ *  only, but a card here changes width with the window standing still - a
+ *  panel dragged or collapsed, a scrollbar appearing after a drill. Listen to
+ *  the chart's own container as well, so it never keeps a stale width. */
+function followContainer(vgSpec: { signals?: Signal[] }) {
+  for (const sig of vgSpec.signals ?? []) {
+    for (const on of sig.on ?? []) {
+      if (on.events === "window:resize") on.events = "window:resize, container:resize";
+    }
+  }
+  return vgSpec;
+}
+
 export function VegaChart({ spec, handlers, compact }: {
   spec: Record<string, unknown>;
   handlers: MarkHandlers;
@@ -71,6 +86,7 @@ export function VegaChart({ spec, handlers, compact }: {
       actions: false,
       renderer: "svg",
       tooltip: { theme: "custom" },
+      patch: followContainer as never,
     })
       .then((r) => {
         if (dead) {

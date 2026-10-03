@@ -252,3 +252,22 @@ def test_listeners_hear_every_move(s):
     s.activate(s.node.uid, "Luzon")
     s.toggle_pin()
     assert [e.action for e in heard] == [J.OPERATION, J.PIN]
+
+
+# -- saying where a move lands -----------------------------------------------
+
+def test_a_replacement_says_so_and_how_to_get_back(s):
+    landed = s.set_comparison("mom")
+    assert landed.message.startswith(
+        "Replaced the top chart: Revenue by Region — vs MOM")
+    assert "↑ Parent goes back to Revenue by Region" in landed.message
+
+
+def test_every_menu_verb_says_where_it_lands(s):
+    items = {i.verb: i.lands for g in s.menu(s.node.uid, "Luzon").groups
+             for i in g if i.action == "run"}
+    assert items["explain"] == ""
+    assert items["drill_down"] == "below"
+    assert items["focus"] == "below"
+    assert items["compare"] == "replace"
+    assert items["switch_metric"] == "replace"

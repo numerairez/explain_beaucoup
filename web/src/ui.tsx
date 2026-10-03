@@ -1,7 +1,8 @@
 import * as Select from "@radix-ui/react-select";
 import * as Tooltip from "@radix-ui/react-tooltip";
 import clsx from "clsx";
-import { Check, ChevronDown } from "lucide-react";
+import { Check, ChevronDown, CornerDownRight, Replace } from "lucide-react";
+import type { Lands } from "./api";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
 import { forwardRef } from "react";
 
@@ -175,5 +176,26 @@ export function Logo({ size = 22 }: { size?: number }) {
       <rect x="14" y="11" width="4" height="14" rx="1.5" fill="var(--accent-ink)" />
       <rect x="20" y="7" width="4" height="18" rx="1.5" fill="var(--accent-ink)" opacity=".55" />
     </svg>
+  );
+}
+
+/** Says before a move is made whether its chart opens below or takes the
+ *  top slot - the one thing the stack would otherwise leave to surprise. */
+export function LandsMark({ lands, label }: { lands: Lands; label?: boolean }) {
+  if (!lands) return null;
+  const replace = lands === "replace";
+  const Icon = replace ? Replace : CornerDownRight;
+  const text = replace ? "replaces this chart" : "opens below";
+  return (
+    <span
+      title={replace ? "Replaces the chart on top - ↑ Parent goes back" : "Opens below, keeping this chart on top"}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 text-[10.5px] font-medium",
+        replace ? "text-offset" : "text-muted/80",
+      )}
+    >
+      <Icon className="size-3" />
+      {label && text}
+    </span>
   );
 }
