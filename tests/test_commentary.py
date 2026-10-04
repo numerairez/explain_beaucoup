@@ -297,14 +297,13 @@ def test_export_carries_no_in_app_links(engine, model):
 
 
 def test_every_grammar_verb_has_a_phrase(model):
-    from explain_beaucoup.core import operations
-    import inspect
-    src = inspect.getsource(operations.apply)
+    from explain_beaucoup.core.operations import VERBS
     for verb in ("drill_down", "decompose", "drill_up", "focus", "compare",
                  "trend", "switch_metric", "change_contribution",
                  "exceptions", "distribution", "set_time", "set_grain",
-                 "clear_comparison"):
-        assert f'"{verb}"' in src
+                 "clear_comparison", "cross"):
+        assert verb in VERBS
+    for verb in VERBS:
         assert verb in PHRASES
 
 

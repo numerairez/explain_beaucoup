@@ -14,6 +14,8 @@ export type Panel = {
   subtitle: string;
   badge: string;
   actions: PanelAction[];
+  /** Which component draws `spec` - see charts/registry.tsx. */
+  renderer: string;
   spec: Record<string, unknown>;
 };
 

@@ -30,6 +30,12 @@ the same interaction rules, the same numbers and the same commentary.
 For frontend work, run `explain-beaucoup web --no-browser` and `npm run dev`
 side by side. Vite serves on :5173 and proxies `/api` to the server.
 
+**How it works** (the book icon in the top bar, or `#/guide`) is a live tour
+of the framework for developers. It sends real moves through the grammar and
+engine and shows every stage: the Context before and after, the verb, the
+validation, the backend query, the view, and where the result lands. It never
+writes to the session it borrows.
+
 Keys: `⌘K` command palette · `E` explain · `P` pin · `U` drill up ·
 `[` back · `B` branch · `D` dark mode.
 
@@ -177,29 +183,30 @@ CHILDREN CHARTS   2 views drilled out of the chart above
 | Interaction | `ui/` | Qt widgets: forwards gestures to the session, renders what it says |
 | Session | `core/session.py` | Headless interaction rules: where a result lands, its chart kind, menus, selection, the journal |
 | Chart stack | `view/stack.py` | The stack as JSON-able panels, for any front end |
-| Analytical grammar | `core/operations.py` | Typed verbs over Contexts |
+| Analytical grammar | `core/operations.py`, `core/verbs.py` | The `Verb` contract and registry; the built-in verbs |
 | Calendar | `core/timegrain.py` | Day / week / month / quarter / year period maths |
 | Semantic model | `semantic/specs.py` | Validates grain, metrics, hierarchies — and *advertises* what is legal |
 | Model authoring | `semantic/loader.py` | YAML → model, validation against real data, scaffolding |
 | Dataset catalogue | `semantic/catalog.py` | Which models exist, and the scope one is opened under |
 | Data | `data/source.py` | Reads a team's file, normalises the time axis |
-| Analytical engine | `engine/engine.py` | Deterministic computation, result handles, caching |
-| Explain engine | `engine/explain.py` | Ranked, deterministic evidence |
+| Backends | `engine/backend.py` | The one primitive every number is built from — pandas in memory, or DuckDB SQL |
+| Analytical engine | `engine/engine.py` | The analysis registry: result families, result handles, caching |
+| Explain engine | `engine/explain.py` | The signal registry: ranked, deterministic evidence |
 | Investigation graph | `core/graph.py` | Nodes, edges, branches, pins, history |
 | Journal | `core/journal.py` | Every move in order — including returns, closes and dead ends |
-| Renderer | `view/vega.py` | Result → Vega-Lite spec |
+| Renderer | `view/vega.py` | The view registry: result kind → renderer + spec |
 | Narration | `engine/narrate.py` | The AI seam — numbers already decided |
 | Commentary | `engine/commentary.py` | The journal told as prose, one beat per move |
 
 The dependency arrow points one way: `ui → core/engine → semantic`. The engine
 has no idea a GUI exists, which is why the whole framework is testable without
-Qt — 134 tests, none of which open a window.
+Qt — none of the tests open a window.
 
 ---
 
 ## The analytical grammar
 
-Thirteen verbs in [`core/operations.py`](explain_beaucoup/core/operations.py),
+Fourteen verbs, registered in [`core/verbs.py`](explain_beaucoup/core/verbs.py),
 plus `branch` and `pin` at the graph level and `explain` handled by the UI.
 Every verb takes the current Context and returns a new one, or raises
 `SemanticError` — the analysis is blocked *before* a chart or a narrative
@@ -216,6 +223,7 @@ no verb can produce a node the model would reject.
 | `decompose` | `dimension`, `member?` | Breaks the same population down by a **different, unrelated** dimension: Luzon → by Channel. Free of hierarchy constraints, so this is the lateral move — but the menu only offers dimensions the model says are meaningful here. |
 | `drill_up` | — | Steps back up the hierarchy, dropping the filter that pinned the parent level. At the top level it goes to the scope total (`grain=()`). Refused with "Already at the top of this path" when there is no grain at all. |
 | `focus` | `dimension`, `member` | Narrows the scope but **keeps the grain** — "show me only this member", as opposed to "break this member down". |
+| `cross` | `dimension`, `periods?` | Adds a **second axis**: Region × Channel, or Region × time over the trailing *n* periods. The node becomes a `matrix`, drawn as a heatmap. Time always runs along the columns. A matrix cannot be crossed again. |
 
 Both drills and `decompose` share one subtlety worth knowing. If the current
 grain is the *time* column, the member you clicked is a period, not a
@@ -223,6 +231,12 @@ dimension member — so it re-keys `ctx.time` instead of adding a filter. Time
 lives in `ctx.time`, never in `ctx.filters`. Dropping that distinction would
 break the whole plotted window down by the new dimension, which is not what
 clicking one point on a line means.
+
+A matrix's marks are *cells*, keyed `Luzon × Digital`. Drilling or explaining a
+cell pins both of its axes; drilling a matrix without a cell re-splits its rows
+and keeps its columns; `drill_up` drops the column axis. Verbs that read one
+axis (`change_contribution`, `exceptions`, `distribution`) read the rows, and a
+time column they drop collapses the window to its last period.
 
 ### Change — what moved, and against what?
 
@@ -248,7 +262,7 @@ clicking one point on a line means.
 | `distribution` | `member?` | Drops from the aggregate to the **population underneath it** — one point per fact cell, plus n / p10 / median / p90. What a "cell" is comes from the model (`cell: true`, else the leaf of each hierarchy plus every standalone dimension), never from this module. |
 | `switch_metric` | `metric` | The same population, a different measure: Revenue → Volume → Margin %. Metrics that declare the current grain invalid are not offered. |
 
-### The five result families
+### The six result families
 
 `result_kind()` decides which family a node is read as, and the renderer maps
 each one to a view. This is why the same Context can be a bar chart or a line
@@ -261,6 +275,7 @@ chart without either the Context or the engine knowing about charts.
 | `change_contribution` | `change_contribution` | A breakdown read as signed deltas — diverging colour, sorted by movement. |
 | `exceptions` | `exceptions` | Members ranked by `abs(z)` against their own baseline, carrying `z`, `baseline`, `baseline_periods`. |
 | `distribution` | `distribution` | One row per fact cell, with quantile notes. |
+| `matrix` | any node with two axes (`cross`) | One row per cell, carrying `row`, `col` and their orders; compared cell by cell, with a time column shifted along with the reference window. |
 
 ### Graph-level operations
 
@@ -286,6 +301,63 @@ documented:
   candidates supplied by `alternative_dimensions()`.
 * **Metric** — Revenue → Volume → Margin % over the same population.
   `switch_metric`, filtered by each metric's `invalid_grains`.
+
+---
+
+## Extending the framework
+
+Every layer that used to be a closed list is a registry. Adding to one is a
+class or a function plus one call — nothing else in the framework changes, and
+the menu, the session, the commentary and every front end pick it up.
+
+| To add | Register with | It owns |
+|---|---|---|
+| A verb | `@register_verb` on a `Verb` subclass (`core/operations.py`) | `apply`, `advertise` (its menu entries), `kind`, and the flags the session reads: `member_scoped`, `placement` (`"replace"` / `"below"`), `preserves_kind`, `hierarchy_scoped` |
+| Its commentary | `register_phrase(verb, fn)` (`engine/commentary.py`) | How the move is told. Without one, the lineage summary is used. |
+| A result family | `@register_analysis(kind, title=...)` (`engine/engine.py`) | `compute(engine, ctx) -> ResultHandle`, built on `engine.aggregate` |
+| A view | `register_view(kind, build, renderer=...)` (`view/vega.py`) | The spec, and which front-end component draws it |
+| An explain signal | `register_signal(name, fn, per=..., weight=...)` (`engine/explain.py`) | Evidence from a `Probe` — once per candidate dimension, or once for the scope |
+| A data store | any object meeting the `Backend` protocol (`engine/backend.py`) | `aggregate(Query)` plus a few calendar questions |
+
+```python
+@register_verb
+class Top3(Verb):
+    name = "top3"
+    placement = "replace"
+    def apply(self, model, ctx, p, op):
+        return ctx.evolve(self.step("Top three", p, op))
+    def advertise(self, model, ctx):
+        return [Capability(self.name, "Top three", (), "Composition")]
+```
+
+### Backends
+
+The engine never touches a DataFrame directly. Every result family is built
+from one primitive, `backend.aggregate(Query)`: sum these components, in this
+scope, grouped by these keys. Ratios are divided by the engine, so a backend
+only ever sums.
+
+```python
+from explain_beaucoup.engine.backend import DuckDBBackend
+import duckdb
+
+conn = duckdb.connect("warehouse.duckdb")
+session = Session(DuckDBBackend(conn, "read_parquet('sales/*.parquet')",
+                                time_column="order_date",
+                                native_grain="day"), model)
+```
+
+`PandasBackend` (what the YAML models load into) reports the *equivalent* SQL
+as provenance; `DuckDBBackend` reports the query it actually ran. The two are
+tested to agree on every result family. DuckDB is optional:
+`pip install -e '.[sql]'`.
+
+### Renderers
+
+A chart-stack panel carries `renderer` beside `spec`. The web client picks the
+component from `RENDERERS` in `web/src/charts/registry.tsx`; every renderer
+reports marks by their `key`, so a mark in any of them opens the same governed
+menu. Everything built in is `vega-lite`.
 
 ---
 

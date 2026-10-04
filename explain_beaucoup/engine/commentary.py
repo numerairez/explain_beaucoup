@@ -170,9 +170,9 @@ class _Say:
 
     def _edges(self) -> tuple[str, str, tg.Grain]:
         """First and last period of the data, at the data's own grain."""
-        ts = self.engine.source.timestamps
-        n = self.engine.source.native_grain
-        return tg.key_of(ts.min(), n), tg.key_of(ts.max(), n), n
+        lo, hi = self.engine.time_bounds()
+        n = self.engine.native_grain
+        return tg.key_of(lo, n), tg.key_of(hi, n), n
 
     def partial(self, window: Any) -> bool:
         first, last, n = self._edges()
@@ -620,6 +620,7 @@ ATTEMPTS = {
     "change_contribution": "find what moved it",
     "exceptions": "look for exceptions",
     "distribution": "open the distribution",
+    "cross": "cross it with another axis",
 }
 
 
@@ -765,6 +766,26 @@ def _trend(s: _Say) -> Told:
     return Told(move, question, out)
 
 
+def _cross(s: _Say) -> Told:
+    a, b = (s.model.label_of(g) for g in s.ctx.grain[:2])
+    res = s.res
+    move = f"Crossed {s.link(a)} with {b}{s.where()}."
+    question = f"Where do {a} and {b} meet - which cells carry {s.metric.label}?"
+    if res is None or not res.rows:
+        return Told(move, question, "")
+    cells = sorted((r for r in res.rows if r.value is not None),
+                   key=lambda r: -(r.value or 0.0))[:MAX_CONTRIBUTORS]
+    if s.metric.is_ratio:
+        names = _join([f"{r.label} ({s.v(r.value)})" for r in cells])
+        return Told(move, question, f"Highest cells: {names}.")
+    names = _join([f"{r.label} ({r.share:.0%})" for r in cells
+                   if r.share is not None])
+    top = sum(r.share or 0.0 for r in cells)
+    return Told(move, question,
+                f"{s.level(res)} The largest cells - {names} - hold "
+                f"{top:.0%} of it.")
+
+
 def _change_contribution(s: _Say) -> Told:
     return Told(f"Asked what moved{s.who()} by {s.link(s.dim(s.split))}.",
                 f"Which {s.dim(s.split)} drove the change, and which held "
@@ -852,7 +873,14 @@ PHRASES: dict[str, Phraser] = {
     "change_contribution": _change_contribution,
     "exceptions": _exceptions,
     "distribution": _distribution,
+    "cross": _cross,
 }
+
+
+def register_phrase(verb: str, phraser: Phraser) -> None:
+    """How the commentary tells a (plugin) verb. Unregistered verbs fall
+    back to the lineage summary."""
+    PHRASES[verb] = phraser
 
 
 def _fallback(s: _Say) -> Told:

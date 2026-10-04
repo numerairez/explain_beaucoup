@@ -7,11 +7,12 @@ means - the metric, grain, scope and legal operations all live upstream
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from ..core import timegrain as tg
 from ..core.operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
-                               TIMESERIES)
+                               MATRIX, TIMESERIES)
 from ..engine.engine import ResultHandle, comparison_label
 from ..semantic.specs import SemanticModel
 from . import format as fmt
@@ -109,6 +110,9 @@ def _titles(model: SemanticModel, res: ResultHandle) -> tuple[str, str]:
                 + (f" by {model.label_of(dim)}" if dim else ""))
     elif res.kind == DISTRIBUTION:
         head = f"Distribution of {metric.label.lower()}"
+    elif res.kind == MATRIX and len(res.axes) == 2:
+        head = (f"{metric.label} by {model.label_of(res.axes[0])} × "
+                f"{model.label_of(res.axes[1])}")
     elif dim:
         head = f"{metric.label} by {model.label_of(dim)}"
     else:
@@ -135,16 +139,41 @@ def titles_for(model: SemanticModel, res: ResultHandle) -> tuple[str, str]:
 
 # --------------------------------------------------------------------------
 
+# A view builder: (model, result, theme, selected, width, height) -> spec.
+Builder = Callable[[SemanticModel, ResultHandle, Theme, "str | None", int, int],
+                   dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class View:
+    renderer: str
+    build: Builder
+
+
+# Result kind -> how it is drawn. `renderer` names the front-end component
+# that draws the spec ("vega-lite" here); a kind drawn by another library
+# registers a View with its own renderer, and every front end picks its
+# component by that name.
+VIEWS: dict[str, View] = {}
+
+
+def register_view(kind: str, build: Builder, *,
+                  renderer: str = "vega-lite") -> None:
+    VIEWS[kind] = View(renderer, build)
+
+
+def renderer_for(kind: str) -> str:
+    return (VIEWS.get(kind) or VIEWS[BREAKDOWN]).renderer
+
+
 def spec_for(model: SemanticModel, res: ResultHandle, theme: Theme, *,
              selected: str | None = None, width: int = 720,
              height: int = 380, compact: bool = False) -> dict[str, Any]:
-    builders = {
-        TIMESERIES: _timeseries_spec,
-        CHANGE: _change_spec,
-        EXCEPTIONS: _exceptions_spec,
-        DISTRIBUTION: _distribution_spec,
-    }
-    build = builders.get(res.kind, _breakdown_spec)
+    view = VIEWS.get(res.kind) or VIEWS[BREAKDOWN]
+    if view.renderer != "vega-lite":
+        return view.build(model, res, theme, selected, width,
+                          COMPACT_HEIGHT if compact else height)
+    build = view.build
     spec = build(model, res, theme, selected,
                  width, COMPACT_HEIGHT if compact else height)
     head, sub = _titles(model, res)
@@ -638,3 +667,117 @@ def _distribution_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
     return {"data": {"values": data},
             "layer": [hist, median_rule, median_label],
             "width": width, "height": height}
+
+
+# -- matrix ------------------------------------------------------------------
+
+MATRIX_LABEL_LIMIT = 30   # write values into cells only while they fit
+
+
+def _matrix_spec(model: SemanticModel, res: ResultHandle, theme: Theme,
+                 selected: str | None, width: int, height: int) -> dict[str, Any]:
+    """A heatmap: rows x columns, colour by value (one hue, light to dark) -
+    or, with a comparison, by change (two poles around a neutral midpoint)."""
+    metric = res.metric
+    rows_axis, cols_axis = (res.axes + ("", ""))[:2]
+    comparing = bool(res.context.comparison) and any(
+        r.delta is not None for r in res.rows)
+    data: list[dict[str, Any]] = []
+    for r in res.rows:
+        e = dict(r.extra)
+        data.append({
+            "key": r.key, "row": e.get("row_label"), "col": e.get("col_label"),
+            "row_order": e.get("row_order"), "col_order": e.get("col_order"),
+            "value": r.value, "delta": r.delta, "delta_pct": r.delta_pct,
+            "value_txt": fmt.value(metric, r.value, short=True),
+            "delta_txt": (fmt.signed(metric, r.delta)
+                          if r.delta is not None else None),
+            "share_txt": f"{r.share:.1%}" if r.share is not None else None,
+            "selected": r.key == selected,
+        })
+    field = "delta" if comparing else "value"
+    vals = [d[field] for d in data if d[field] is not None]
+    lo, hi = (min(vals), max(vals)) if vals else (0.0, 1.0)
+    if comparing:
+        bound = max(abs(lo), abs(hi)) or 1.0
+        # Interpolate in Lab: HCL would detour through brown and green on its
+        # way from either pole to the neutral midpoint.
+        color_scale = {"domain": [-bound, 0, bound],
+                       "range": [theme.neg, theme.mid, theme.pos],
+                       "interpolate": "lab"}
+        # Text sits on the cell: dark ink near the neutral middle, surface
+        # ink on a saturated pole.
+        for d in data:
+            v = d["delta"]
+            d["strong"] = v is not None and abs(v) > bound * 0.55
+    else:
+        color_scale = {"range": list(theme.sequential), "zero": False,
+                       "interpolate": "lab",
+                       "domain": [lo, hi] if hi > lo else None}
+        for d in data:
+            v = d["value"]
+            d["strong"] = v is not None and hi > lo and (v - lo) / (hi - lo) > 0.55
+    if color_scale.get("domain") is None:
+        color_scale.pop("domain", None)
+
+    row_sort = {"field": "row_order", "order": "ascending"}
+    col_sort = {"field": "col_order", "order": "ascending"}
+    tooltip = [
+        {"field": "row", "title": model.label_of(rows_axis)},
+        {"field": "col", "title": model.label_of(cols_axis)},
+        {"field": "value_txt", "title": metric.label},
+    ]
+    if any(d["share_txt"] for d in data):
+        tooltip.append({"field": "share_txt", "title": "Share of total"})
+    if comparing:
+        tooltip += [{"field": "delta_txt", "title": "Change"},
+                    {"field": "delta_pct", "title": "Change %", "format": ".1%"}]
+
+    cells = {
+        "mark": {"type": "rect", "cornerRadius": 2},
+        "encoding": {
+            "y": {"field": "row", "type": "ordinal", "sort": row_sort,
+                  "axis": _cat_axis()},
+            "x": {"field": "col", "type": "ordinal", "sort": col_sort,
+                  "axis": {**_cat_axis(), "orient": "top",
+                           "labelAngle": 0 if len({d["col"] for d in data}) <= 8
+                           else -40}},
+            "color": {"field": field, "type": "quantitative",
+                      "scale": color_scale,
+                      "legend": {"title": ("Change" if comparing
+                                           else metric.label),
+                                 "orient": "bottom", "direction": "horizontal",
+                                 "gradientLength": 180,
+                                 "format": fmt.vega_format(metric)}},
+            # A 2px surface gap between cells; the selected cell is ringed.
+            "stroke": {"condition": {"test": "datum.selected",
+                                     "value": theme.selected},
+                       "value": theme.surface},
+            "strokeWidth": {"condition": {"test": "datum.selected", "value": 2.5},
+                            "value": 2},
+            "tooltip": tooltip,
+        },
+    }
+    layers: list[dict[str, Any]] = [cells]
+    if len(data) <= MATRIX_LABEL_LIMIT:
+        layers.append({
+            "mark": {"type": "text", "fontSize": 10.5, "baseline": "middle"},
+            "encoding": {
+                "y": {"field": "row", "type": "ordinal", "sort": row_sort},
+                "x": {"field": "col", "type": "ordinal", "sort": col_sort},
+                "text": {"field": "delta_txt" if comparing else "value_txt"},
+                "color": {"condition": {"test": "datum.strong",
+                                        "value": theme.surface},
+                          "value": theme.ink},
+            },
+        })
+    return {"data": {"values": data}, "layer": layers, "width": width,
+            "height": {"step": 30}}
+
+
+register_view(BREAKDOWN, _breakdown_spec)
+register_view(TIMESERIES, _timeseries_spec)
+register_view(CHANGE, _change_spec)
+register_view(EXCEPTIONS, _exceptions_spec)
+register_view(DISTRIBUTION, _distribution_spec)
+register_view(MATRIX, _matrix_spec)

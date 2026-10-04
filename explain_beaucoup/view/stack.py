@@ -13,7 +13,7 @@ from ..core.graph import Node
 from ..core.session import Session
 from ..semantic.specs import SemanticError
 from .theme import THEMES
-from .vega import spec_for, titles_for
+from .vega import renderer_for, spec_for, titles_for
 
 
 def stack(session: Session, theme: str = "light", *,
@@ -71,5 +71,8 @@ def panel(session: Session, node: Node, res: Any, theme: str, *,
         "subtitle": sub,
         "badge": badge,
         "actions": actions,
+        # Which front-end component draws `spec`. Every renderer reports
+        # marks by their `key`, so menus and drills work the same in all.
+        "renderer": renderer_for(res.kind),
         "spec": spec,
     }

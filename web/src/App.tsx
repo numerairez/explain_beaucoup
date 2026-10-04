@@ -4,6 +4,7 @@ import { Toaster } from "sonner";
 import { api } from "./api";
 import type { Snapshot } from "./api";
 import { Picker } from "./components/Picker";
+import { GuidePage } from "./guide/GuidePage";
 import { Workspace } from "./components/Workspace";
 import { applyTheme, readTheme, WorkspaceProvider } from "./store";
 import { Logo } from "./ui";
@@ -11,11 +12,23 @@ import { Logo } from "./ui";
 // The session id lives in the URL hash, so a reload picks the investigation
 // back up for as long as the server keeps it.
 const fromHash = () => window.location.hash.match(/^#\/s\/(\w+)/)?.[1] ?? null;
+// "How it works" lives at #/guide, optionally borrowing a session: #/guide/<sid>.
+const guideHash = () => {
+  const m = window.location.hash.match(/^#\/guide(?:\/(\w+))?/);
+  return m ? { sid: m[1] ?? null } : null;
+};
 
 export function App() {
   const [snap, setSnap] = useState<Snapshot | null>(null);
   const [phase, setPhase] = useState<"boot" | "pick" | "work">("boot");
+  const [guide, setGuide] = useState(guideHash);
   const theme = readTheme();
+
+  useEffect(() => {
+    const onHash = () => setGuide(guideHash());
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
 
   useEffect(() => applyTheme(theme), [theme]);
 
@@ -35,6 +48,7 @@ export function App() {
   );
 
   useEffect(() => {
+    if (guideHash()) return;
     const sid = fromHash();
     if (sid) {
       void enter(sid);
@@ -48,6 +62,26 @@ export function App() {
     setSnap(null);
     setPhase("pick");
   }, []);
+
+  if (guide) {
+    return (
+      <Tooltip.Provider>
+        <GuidePage
+          sid={guide.sid}
+          onBack={(sid) => {
+            setGuide(null);
+            if (sid && snap?.session === sid) {
+              window.location.hash = `/s/${sid}`;
+            } else if (sid) {
+              void enter(sid);
+            } else {
+              leave();
+            }
+          }}
+        />
+      </Tooltip.Provider>
+    );
+  }
 
   return (
     <Tooltip.Provider>

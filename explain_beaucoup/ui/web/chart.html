@@ -195,7 +195,8 @@ function embed(rec, p) {
   rec.specJson = specJson;
   rec.theme = theme;
 
-  const rows = countRows(p.spec);
+  // This surface draws Vega-Lite only; another renderer gets a note.
+  const rows = (p.renderer || "vega-lite") === "vega-lite" ? countRows(p.spec) : 0;
   rec.emptyEl.hidden = rows !== 0;
   rec.chartEl.hidden = rows === 0;
   if (rows === 0) {

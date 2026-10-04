@@ -31,7 +31,7 @@ from ..semantic.catalog import CatalogEntry, Scope, ScopeError
 from ..semantic.loader import LoadedModel, ModelError, load_model_file
 from ..semantic.specs import SemanticError
 from ..view.theme import LIGHT
-from . import state
+from . import lab, state
 
 STATIC = Path(__file__).parent / "static"
 
@@ -60,6 +60,23 @@ class ScopeIn(BaseModel):
 
 class OpenIn(ScopeIn):
     entry: int
+
+
+class LabStep(BaseModel):
+    """A dry-run gesture for the "How it works" page: a Context held by the
+    page, a verb, and the mark it was scoped to."""
+
+    context: dict[str, Any]
+    verb: str
+    params: dict[str, Any] = Field(default_factory=dict)
+    member: str | None = None
+    kind: str = "breakdown"
+
+
+class LabContext(BaseModel):
+    context: dict[str, Any]
+    kind: str = "breakdown"
+    selected: str | None = None
 
 
 class Move(BaseModel):
@@ -257,6 +274,46 @@ def create_app(models_dir: Path, *, preload: LoadedModel | None = None) -> FastA
         return (narrate_investigation(s.model, s.engine, s.graph) + "\n\n"
                 + s.commentary.markdown(live=set(), heading="## Commentary",
                                         layout=TREE) + "\n")
+
+    # -- the lab: the "How it works" page ----------------------------------
+    # Read-only: these run the real grammar and engine against a session's
+    # model, but never touch its graph or journal.
+
+    @app.get("/api/sessions/{sid}/lab")
+    def get_lab(sid: str, theme: str = "light") -> dict[str, Any]:
+        s = workspace(sid).session
+        return {"start": lab.start(s, _theme(theme)),
+                "registry": lab.registry(s)}
+
+    @app.post("/api/sessions/{sid}/lab/step")
+    def post_lab_step(sid: str, body: LabStep,
+                      theme: str = "light") -> dict[str, Any]:
+        s = workspace(sid).session
+        try:
+            return lab.step(s, body.context, body.verb, body.params,
+                            body.member, body.kind, _theme(theme))
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(422, f"Not a usable Context: {exc}") from exc
+
+    @app.post("/api/sessions/{sid}/lab/read")
+    def post_lab_read(sid: str, body: LabContext,
+                      theme: str = "light") -> dict[str, Any]:
+        s = workspace(sid).session
+        try:
+            return lab.read(s, body.context, body.kind, _theme(theme),
+                            body.selected)
+        except SemanticError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(422, f"Not a usable Context: {exc}") from exc
+
+    @app.post("/api/sessions/{sid}/lab/explain")
+    def post_lab_explain(sid: str, body: LabContext) -> dict[str, Any]:
+        s = workspace(sid).session
+        try:
+            return lab.explain(s, body.context)
+        except (KeyError, ValueError, TypeError) as exc:
+            raise HTTPException(422, f"Not a usable Context: {exc}") from exc
 
     # -- the built client --------------------------------------------------
 

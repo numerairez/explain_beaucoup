@@ -130,6 +130,24 @@ class LineageStep:
 
 
 # --------------------------------------------------------------------------
+# Cells
+# --------------------------------------------------------------------------
+
+# A Context may have two axes (a matrix). One of its marks is then a *cell*:
+# a member of each axis, joined into one key so every front end can still
+# select, menu and drill a mark by a single string.
+CELL_SEP = " × "
+
+
+def cell_key(*members: str) -> str:
+    return CELL_SEP.join(str(m) for m in members)
+
+
+def split_cell(key: str) -> tuple[str, ...]:
+    return tuple(str(key).split(CELL_SEP))
+
+
+# --------------------------------------------------------------------------
 # Context
 # --------------------------------------------------------------------------
 
@@ -144,8 +162,10 @@ class Context:
     metric: str
     time: TimeWindow
     filters: tuple[tuple[str, str], ...] = ()
+    # The axes the value is broken down by: () is the scope total, one name a
+    # breakdown or a trend, two names a matrix (rows, columns).
     grain: tuple[str, ...] = ()
-    comparison: str | None = None          # None | "mom" | "qoq" | "yoy"
+    comparison: str | None = None          # a comparison the model declares
     lineage: tuple[LineageStep, ...] = field(default=(), compare=False)
 
     # -- construction helpers ---------------------------------------------
@@ -207,6 +227,22 @@ class Context:
             d["lineage"] = [s.to_dict() for s in self.lineage]
         return d
 
+    @staticmethod
+    def from_dict(d: Mapping[str, Any]) -> "Context":
+        """The inverse of `to_dict` - a Context is a value, so it can travel
+        (to a browser, a file, an agent) and come back as the same node."""
+        t = d["time"]
+        lineage = tuple(
+            LineageStep(s["verb"], s.get("summary", ""),
+                        tuple(sorted((s.get("params") or {}).items())),
+                        s.get("source", ""))
+            for s in d.get("lineage") or ())
+        return Context.new(d["dataset"], d["metric"],
+                           TimeWindow(t["start"], t["end"], t["grain"]),
+                           filters=d.get("filters") or {},
+                           grain=tuple(d.get("grain") or ()),
+                           comparison=d.get("comparison"), lineage=lineage)
+
     @property
     def fingerprint(self) -> str:
         """Stable hash of the analytical state. Lineage is deliberately
@@ -229,7 +265,7 @@ class Context:
     def __str__(self) -> str:
         bits = [self.metric]
         if self.grain:
-            bits.append("by " + "/".join(self.grain))
+            bits.append("by " + " × ".join(self.grain))
         if self.filters:
             bits.append("for " + self.scope_label())
         bits.append(self.time.label)

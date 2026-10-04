@@ -22,8 +22,9 @@ from typing import Any, Callable
 import pandas as pd
 
 from ..data.source import DataSource
+from ..engine.backend import Backend
 from ..engine.commentary import Commentary
-from ..engine.engine import AnalyticalEngine
+from ..engine.engine import AnalyticalEngine, normal_kind, title_for
 from ..engine.explain import Evidence, ExplanationResult, explain
 from ..semantic.specs import SemanticError, SemanticModel
 from ..view import format as fmt
@@ -32,18 +33,35 @@ from .context import Context, LineageStep, TimeWindow
 from .graph import InvestigationGraph, Node
 from .journal import Journal, JournalEntry
 from .operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
-                         TIMESERIES, Operation, apply, result_kind)
+                         MATRIX, TIMESERIES, Operation, aggregate_view, apply,
+                         narrow, result_kind, verb as verb_of)
 
-# Verbs that can be scoped to the mark under the cursor.
-MEMBER_VERBS = {"drill_down", "decompose", "trend", "change_contribution",
-                "exceptions", "distribution", "focus"}
-# Verbs that re-read the same node rather than changing its family of result.
-PRESERVE_KIND = {"compare", "switch_metric", "set_time", "clear_comparison"}
-# Verbs that re-frame the view in place instead of narrowing it. These replace
-# the chart on top of the stack; everything else opens a chart below it.
-IN_PLACE = PRESERVE_KIND | {"drill_up", "set_grain"}
-# Member-scoped verbs that re-grain to the member's hierarchy child.
-HIERARCHY_VERBS = {"change_contribution", "exceptions"}
+
+# How a verb behaves on the stack is declared by the verb itself (see
+# `core.operations.Verb`); these read it, so a registered plugin verb is
+# treated exactly like a built-in one.
+def member_scoped(verb: str) -> bool:
+    v = verb_of(verb)
+    return bool(v and v.member_scoped)
+
+
+def preserves_kind(verb: str) -> bool:
+    v = verb_of(verb)
+    return bool(v and v.preserves_kind)
+
+
+def in_place(verb: str) -> bool:
+    """Re-frames the view instead of narrowing it: replaces the chart on top
+    of the stack rather than opening one below it."""
+    v = verb_of(verb)
+    return bool(v and v.placement == "replace")
+
+
+def hierarchy_scoped(verb: str) -> bool:
+    v = verb_of(verb)
+    return bool(v and v.hierarchy_scoped)
+
+
 GROUP_ORDER = ["Explain", "Composition", "Change", "Trend", "Exception",
                "Distribution", "Metric"]
 LENSES = {
@@ -97,13 +115,13 @@ class Menu:
 class Session:
     """One analyst's investigation over one governed table."""
 
-    def __init__(self, data: DataSource | pd.DataFrame,
+    def __init__(self, data: Backend | DataSource | pd.DataFrame,
                  model: SemanticModel) -> None:
         self.model = model
-        frame = data.frame if isinstance(data, DataSource) else data
-        if not model.member_counts:
-            model.profile(frame)
         self.engine = AnalyticalEngine(data, model)
+        if not model.member_counts:
+            model.profile_counts(self.engine.backend.distinct_counts(
+                d.column for d in model.dimensions.values()))
         self.graph = InvestigationGraph()
         # What the analyst did, in order - the graph only keeps where they are.
         self.journal = Journal()
@@ -118,7 +136,7 @@ class Session:
         metric = model.metric(model.default_metric)
         root = Context.new(
             model.dataset, model.default_metric,
-            TimeWindow.single(self.engine.source.latest(model.time_grain),
+            TimeWindow.single(self.engine.latest(model.time_grain),
                               model.time_grain),
             grain=grain)
         landed = self.navigate(
@@ -154,7 +172,7 @@ class Session:
             self._sel[uid] = key
 
     def periods(self, grain: str) -> list[str]:
-        return self.engine.source.periods(grain)
+        return self.engine.periods(grain)
 
     def lens_of(self, node: Node | None = None) -> str | None:
         return LENS_OF_KIND.get((node or self.node).kind)
@@ -174,6 +192,7 @@ class Session:
         `in_place` is for operations that re-frame the same scope (a different
         metric, period or comparison): those replace the chart on top.
         """
+        kind = normal_kind(self.model, ctx, kind)
         try:
             res = self.engine.execute(ctx, kind)
         except SemanticError as exc:
@@ -310,11 +329,11 @@ class Session:
         if verb == "explain":
             return self.explain(member=member)
         p = dict(params or {})
-        if member and verb in MEMBER_VERBS:
+        if member and member_scoped(verb):
             p["member"] = member
         if verb == "set_grain" and "end" not in p:
             # Only the data layer knows where the data actually stops.
-            p["end"] = self.engine.source.latest(
+            p["end"] = self.engine.latest(
                 p.get("grain", self.node.context.time.grain))
             p.pop("latest", None)
         prior = self.node
@@ -328,10 +347,11 @@ class Session:
             self._log_blocked(str(exc), verb, p)
             raise SemanticError(str(exc)) from exc
         kind = result_kind(self.model, new_ctx, op)
-        if verb in PRESERVE_KIND and kind == BREAKDOWN:
-            kind = prior.kind if prior.kind != TIMESERIES else BREAKDOWN
+        if preserves_kind(verb) and kind == BREAKDOWN:
+            kind = (prior.kind if prior.kind not in (TIMESERIES, MATRIX)
+                    else BREAKDOWN)
         landed = self.navigate(new_ctx, kind, op=op, branch=branch,
-                               in_place=verb in IN_PLACE)
+                               in_place=in_place(verb))
         self._log_landing(J.OPERATION, landed, prior, verb=verb, params=p,
                           source=source, context=new_ctx, kind=kind,
                           branch=branch)
@@ -434,11 +454,11 @@ class Session:
             self._log_landing(J.OPERATION, landed, prior, verb="composition",
                               source="lens", context=ctx, kind=BREAKDOWN)
             return landed
-        n = 12 if self.node.context.time.grain in ("day", "week", "month") else 8
+        n = self.model.trend_periods(self.node.context.time.grain)
         params: dict[str, Any] = {"periods": n} if verb == "trend" else {}
         member = self.selected()
         grain = self.node.context.grain
-        if (verb in HIERARCHY_VERBS and member is not None
+        if (hierarchy_scoped(verb) and member is not None
                 and not (grain and self.model.child_dimension(grain[0]))):
             # A leaf member cannot be broken down further; read the whole
             # view instead of blocking the lens.
@@ -452,6 +472,14 @@ class Session:
     def explain(self, *, member: str | None = None) -> ExplanationResult:
         """Explain the focus - or one member of it."""
         ctx = self.node.context
+        if member and len(ctx.grain) == 2:
+            # A cell of a matrix: pin both of its axes, then explain the value.
+            filters, window = narrow(self.model, ctx, member)
+            ctx = ctx.evolve(LineageStep(
+                "focus", f"Focus on {member}", (("member", member),),
+                "explain"), filters=filters, grain=(), time=window)
+            member = None
+        ctx = aggregate_view(self.model, ctx)
         if member:
             dim = ctx.grain[0] if ctx.grain else None
             if dim and dim != self.model.time_column:
@@ -528,7 +556,7 @@ class Session:
             items: list[MenuItem] = []
             for cap in caps_in:
                 label = cap.label
-                if key is not None and cap.verb in HIERARCHY_VERBS:
+                if key is not None and hierarchy_scoped(cap.verb):
                     # Within one member these read along its hierarchy
                     # only; a leaf member has nowhere to go.
                     child = (self.model.child_dimension(ctx.grain[0])
@@ -539,8 +567,9 @@ class Session:
                     label = (f"Break down {key}'s change by {by}"
                              if cap.verb == "change_contribution" else
                              f"Find exceptions within {key} by {by}")
-                elif key is not None and cap.verb in MEMBER_VERBS:
-                    label = _member_label(cap.verb, label, key)
+                elif key is not None and member_scoped(cap.verb):
+                    label = _member_label(cap.verb, label, key,
+                                          ctx.time.grain, cap.param_map)
                 if nested:
                     label = label.replace("Switch metric to ", "")
                 items.append(MenuItem(
@@ -553,7 +582,7 @@ class Session:
 
         tail: list[MenuItem] = []
         if key is not None:
-            dim = ctx.grain[0] if ctx.grain else None
+            dim = ctx.grain[0] if len(ctx.grain) == 1 else None
             if dim and dim != self.model.time_column:
                 tail.append(MenuItem(
                     f"Focus on {key} (keep this grain)", verb="focus",
@@ -619,19 +648,7 @@ class Session:
         return crumb(self.model, node)
 
     def node_title(self, ctx: Context, kind: str) -> str:
-        metric = self.model.metric(ctx.metric)
-        if kind == TIMESERIES:
-            return (f"{metric.label} by {ctx.time.grain} - "
-                    f"{ctx.scope_label()}")
-        if kind == CHANGE:
-            return f"What moved {metric.label} - {ctx.scope_label()}"
-        if kind == EXCEPTIONS:
-            return f"Exceptions - {ctx.scope_label()}"
-        if kind == DISTRIBUTION:
-            return f"Distribution - {ctx.scope_label()}"
-        if ctx.grain:
-            return f"{metric.label} by {self.model.label_of(ctx.grain[0])}"
-        return f"{metric.label} - {ctx.scope_label()}"
+        return title_for(self.model, ctx, normal_kind(self.model, ctx, kind))
 
     # ------------------------------------------------------------------
     # journal
@@ -679,7 +696,7 @@ def lands(verb: str) -> str:
     "below" opens under the chart on top, "" is not a chart at all."""
     if verb == "explain":
         return ""
-    return "replace" if verb in IN_PLACE else "below"
+    return "replace" if in_place(verb) else "below"
 
 
 def crumb(model: SemanticModel, node: Node) -> str:
@@ -691,6 +708,8 @@ def crumb(model: SemanticModel, node: Node) -> str:
         return str(op.param_map["member"])
     if node.kind in KIND_CRUMB:
         return KIND_CRUMB[node.kind]
+    if node.kind == MATRIX and len(ctx.grain) == 2:
+        return " × ".join(model.label_of(g) for g in ctx.grain)
     if op and op.verb == "set_grain":
         return f"by {ctx.time.grain}"
     if op and op.verb == "compare":
@@ -708,13 +727,15 @@ def crumb(model: SemanticModel, node: Node) -> str:
     return model.metric(ctx.metric).label
 
 
-def _member_label(verb: str, label: str, key: str) -> str:
+def _member_label(verb: str, label: str, key: str, grain: str = "month",
+                  params: dict[str, Any] | None = None) -> str:
     if verb == "drill_down":
         return label.replace("Drill down to", f"Drill into {key} by")
     if verb == "decompose":
         return label.replace("Break down by", f"Break {key} down by")
     if verb == "trend":
-        return f"Trend {key} over 12 months"
+        n = (params or {}).get("periods", 12)
+        return f"Trend {key} over {n} {grain}s"
     if verb == "distribution":
         return f"Show distribution within {key}"
     return label

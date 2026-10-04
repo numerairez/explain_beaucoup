@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from dataclasses import replace as dataclasses_replace
-from typing import Any
+from typing import Any, Callable, Literal
 
 from ..core import timegrain as tg
 from ..core.context import Context, LineageStep, TimeWindow
@@ -96,9 +96,8 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
     else:
         # Explaining a value means explaining its movement, so fall back to the
         # model's first declared comparison rather than a hardcoded period.
-        default = next((c for c in model.comparisons
-                        if model.is_valid(dataclasses_replace(ctx, comparison=c.name))[0]),
-                       None)
+        name = model.default_comparison(ctx)
+        default = model.comparison(name) if name else None
         base = ctx if default is None else ctx.evolve(
             LineageStep("compare",
                         f"Compare with {default.label_for(ctx.time.grain)} "
@@ -149,13 +148,16 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
         except SemanticError:
             continue
         provenance.append(res.provenance)
-        evidence.extend(_change_signals(engine, model, res, dim, delta))
-        evidence.extend(_contribution_signals(model, res, dim))
-        evidence.extend(_membership_signals(engine, model, res, dim))
-        evidence.extend(_anomaly_signals(engine, model, dim_ctx, dim))
+        probe = Probe(engine, model, scope_ctx, delta, dim, dim_ctx, res)
+        for sig in SIGNALS.values():
+            if sig.per == "dimension":
+                evidence.extend(sig.run(probe))
         lopsidedness[dim] = _lopsidedness(res)
 
-    evidence.extend(_metric_relationship(engine, model, scope_ctx, delta))
+    probe = Probe(engine, model, scope_ctx, delta)
+    for sig in SIGNALS.values():
+        if sig.per == "scope":
+            evidence.extend(sig.run(probe))
 
     evidence.sort(key=lambda e: -e.score)
     best = max(lopsidedness, key=lambda d: lopsidedness[d]) if lopsidedness else None
@@ -166,6 +168,48 @@ def explain(engine: AnalyticalEngine, model: SemanticModel, ctx: Context, *,
         comparison=base.comparison, evidence=tuple(evidence),
         best_dimension=best, dimensions_tested=tuple(dims),
         provenance=tuple(provenance))
+
+
+# --------------------------------------------------------------------------
+# The signal registry
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Probe:
+    """What a signal can look at. A `dimension` signal is run once per
+    candidate dimension, with that breakdown in `res`; a `scope` signal once,
+    with only the aggregate."""
+
+    engine: AnalyticalEngine
+    model: SemanticModel
+    scope_ctx: Context                   # the aggregate being explained
+    delta: float | None                  # its movement against the reference
+    dim: str | None = None
+    dim_ctx: Context | None = None
+    res: ResultHandle | None = None
+
+
+@dataclass(frozen=True)
+class Signal:
+    name: str
+    run: Callable[[Probe], list[Evidence]]
+    per: Literal["dimension", "scope"] = "dimension"
+    emits: tuple[str, ...] = ()          # the evidence kinds it produces
+
+
+SIGNALS: dict[str, Signal] = {}
+
+
+def register_signal(name: str, run: Callable[[Probe], list[Evidence]], *,
+                    per: Literal["dimension", "scope"] = "dimension",
+                    weight: float | None = None,
+                    emits: tuple[str, ...] = ()) -> None:
+    """Add a family of evidence to "Explain this". `weight` scales its
+    scores against the built-in families (see `WEIGHT`); `emits` names the
+    evidence kinds it produces, when they differ from `name`."""
+    SIGNALS[name] = Signal(name, run, per, emits or (name,))
+    if weight is not None:
+        WEIGHT[name] = weight
 
 
 # --------------------------------------------------------------------------
@@ -202,7 +246,7 @@ def _change_signals(engine: AnalyticalEngine, model: SemanticModel,
                 kind="change_contribution", dimension=dim, member=r.key,
                 headline=f"{r.key} accounts for {share_of_change:.0%} of the "
                          f"{'increase' if parent_dir > 0 else 'decrease'}",
-                detail=f"{label} {r.key} moved {_sig(d)} vs the {cmp_label}"
+                detail=f"{label} {r.key} moved {_sig(d)} vs {_the(cmp_label)}"
                        f"{_pct_tail(r.delta_pct)}.",
                 score=WEIGHT["change_contribution"] * min(abs(share_of_change), 2.0) / 2.0
                       + 0.25 * share_of_gross,
@@ -317,7 +361,8 @@ def _anomaly_signals(engine: AnalyticalEngine, model: SemanticModel,
         out.append(Evidence(
             kind="anomaly", dimension=dim, member=r.key,
             headline=f"{r.key} is {abs(z):.1f} sd {'above' if z > 0 else 'below'} "
-                     f"its own 12-month baseline",
+                     f"its own {dict(r.extra).get('baseline_periods', 12)}-"
+                     f"{dim_ctx.time.grain} baseline",
             detail=f"{_num(r.value)} against a baseline of {_num(base)}.",
             score=WEIGHT["anomaly"] * min(abs(z) / 4.0, 1.0),
             magnitude=abs(z), direction=1 if z > 0 else -1,
@@ -376,6 +421,19 @@ def _metric_relationship(engine: AnalyticalEngine, model: SemanticModel,
         numbers=(("volume_effect", volume_effect), ("rate_effect", rate_effect),
                  ("d_volume", d_vol), ("d_rate", d_rate)),
         target=driver, target_kind=TIMESERIES)]
+
+
+register_signal("change_contribution", lambda p: _change_signals(
+    p.engine, p.model, p.res, p.dim, p.delta),
+    emits=("change_contribution", "offset"))
+register_signal("contribution", lambda p: _contribution_signals(
+    p.model, p.res, p.dim), emits=("contribution", "concentration"))
+register_signal("membership", lambda p: _membership_signals(
+    p.engine, p.model, p.res, p.dim), emits=("new_member", "missing_member"))
+register_signal("anomaly", lambda p: _anomaly_signals(
+    p.engine, p.model, p.dim_ctx, p.dim))
+register_signal("metric_relationship", lambda p: _metric_relationship(
+    p.engine, p.model, p.scope_ctx, p.delta), per="scope")
 
 
 def _lopsidedness(res: ResultHandle) -> float:
@@ -442,7 +500,7 @@ def trend_context(engine: AnalyticalEngine, model: SemanticModel,
     grain = ctx.time.grain
     # Period keys sort as text at every grain, so clamping the wound-back
     # start to the first period with data is a plain max().
-    first = tg.key_of(engine.source.timestamps.min(), grain)
+    first = tg.key_of(engine.time_bounds()[0], grain)
     start = max(tg.add(ctx.time.start, grain, -periods), first)
     return dataclasses.replace(ctx, grain=(model.time_column,),
                                time=TimeWindow(start, ctx.time.end, grain))
@@ -485,3 +543,8 @@ def _sig(v: float | None) -> str:
 
 def _pct_tail(p: float | None) -> str:
     return f" ({p:+.1%})" if p is not None else ""
+
+
+def _the(label: str) -> str:
+    """A model's comparison label may already carry its article."""
+    return label if label.lower().startswith("the ") else f"the {label}"

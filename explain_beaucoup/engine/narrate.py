@@ -144,7 +144,7 @@ def suggested_questions(model: SemanticModel, node: Node) -> list[tuple[str, str
             out.append((f"Which alternative dimension best explains this - "
                         f"{model.label_of(alts[0])}?",
                         "decompose", {"dimension": alts[0]}))
-    n = 12 if ctx.time.grain in ("day", "week", "month") else 8
+    n = model.trend_periods(ctx.time.grain)
     out.append((f"How has this changed over the last {n} {ctx.time.grain}s?",
                 "trend", {"periods": n}))
     if not on_time:

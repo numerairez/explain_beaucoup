@@ -135,3 +135,56 @@ def test_next_questions_say_where_they_land(client, sid):
     assert lands["explain"] == ""
     r = move(client, sid, type="run", verb="compare", params={"period": "mom"})
     assert r["message"].startswith("Replaced the top chart")
+
+
+def test_a_cross_comes_back_as_a_heatmap_panel(client, sid):
+    r = move(client, sid, type="run", uid="n1", verb="cross",
+             params={"dimension": "channel"})
+    child = r["state"]["stack"]["panels"][1]
+    assert child["renderer"] == "vega-lite"
+    assert child["spec"]["layer"][0]["mark"]["type"] == "rect"
+    cell = child["spec"]["data"]["values"][0]["key"]
+    r = move(client, sid, type="activate", uid=child["uid"], key=cell)
+    assert r["message"].startswith("Opened below")
+
+
+# -- the lab behind "How it works" ---------------------------------------------
+
+def test_the_lab_traces_a_move_without_touching_the_session(client, sid):
+    before = client.get(f"/api/sessions/{sid}").json()
+    lab = client.get(f"/api/sessions/{sid}/lab").json()
+    root = lab["start"]["context"]
+    assert {v["name"] for v in lab["registry"]["verbs"]} >= {"drill_down", "cross"}
+    t = client.post(f"/api/sessions/{sid}/lab/step", json={
+        "context": root, "verb": "drill_down",
+        "params": {"dimension": "province"}, "member": "Luzon"}).json()
+    assert t["ok"]
+    assert [s["stage"] for s in t["stages"]] == [
+        "operation", "verb", "apply", "validate", "kind", "engine",
+        "backend", "view", "place"]
+    diff = {d["field"] for d in t["stages"][2]["detail"]["diff"]}
+    assert diff == {"filters", "grain"}
+    assert "GROUP BY province" in t["reading"]["query"]["sql"]
+    after = client.get(f"/api/sessions/{sid}").json()
+    assert after["tree"] == before["tree"]                  # nothing was added
+    assert len(after["commentary"]["lines"]) == len(before["commentary"]["lines"])
+
+
+def test_the_lab_stops_at_the_stage_that_refuses(client, sid):
+    root = client.get(f"/api/sessions/{sid}/lab").json()["start"]["context"]
+    t = client.post(f"/api/sessions/{sid}/lab/step", json={
+        "context": root, "verb": "drill_down",
+        "params": {"dimension": "city"}}).json()
+    assert not t["ok"]
+    assert t["stages"][-1]["stage"] == "apply"
+    assert "structural child" in t["stages"][-1]["error"]
+
+
+def test_the_lab_reads_and_explains_a_context_it_was_handed(client, sid):
+    root = client.get(f"/api/sessions/{sid}/lab").json()["start"]["context"]
+    n = client.post(f"/api/sessions/{sid}/lab/read",
+                    json={"context": root}).json()
+    assert n["context"]["id"] == root["id"]
+    e = client.post(f"/api/sessions/{sid}/lab/explain",
+                    json={"context": root}).json()
+    assert e["ok"] and e["evidence"][0]["target"]["id"].startswith("ctx_")

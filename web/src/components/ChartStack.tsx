@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import type { Panel } from "../api";
 import { useWorkspace } from "../store";
 import { cn, Tip } from "../ui";
-import { VegaChart } from "./VegaChart";
+import { Chart } from "../charts/registry";
 
 const spring = { type: "spring", stiffness: 380, damping: 36, mass: 0.9 } as const;
 
@@ -133,7 +133,8 @@ function ChartCard({ panel, innerRef }: { panel: Panel; innerRef: (el: HTMLEleme
         </div>
       </header>
       <div className={focus ? "mt-3" : "mt-1.5"}>
-        <VegaChart
+        <Chart
+          renderer={panel.renderer}
           spec={panel.spec}
           compact={!focus}
           handlers={{

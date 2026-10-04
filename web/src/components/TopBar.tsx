@@ -1,5 +1,5 @@
 import * as DM from "@radix-ui/react-dropdown-menu";
-import { ArrowLeft, ChevronRight, CornerLeftUp, Download, GitBranch, Moon, Pin, PinOff, Search, Sparkles, Sun } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronRight, CornerLeftUp, Download, GitBranch, Moon, Pin, PinOff, Search, Sparkles, Sun } from "lucide-react";
 import { api } from "../api";
 import { useWorkspace } from "../store";
 import { IconButton, Kbd, Logo, PillSelect, Tip } from "../ui";
@@ -99,6 +99,11 @@ export function TopBar() {
         <Tip label="Export the investigation as markdown">
           <IconButton onClick={exportReport}>
             <Download className="size-4" />
+          </IconButton>
+        </Tip>
+        <Tip label="How the framework works - a live tour for developers">
+          <IconButton onClick={() => (window.location.hash = `/guide/${snap.session}`)}>
+            <BookOpen className="size-4" />
           </IconButton>
         </Tip>
         <Tip label={theme === "dark" ? "Light mode" : "Dark mode"} keys="D">

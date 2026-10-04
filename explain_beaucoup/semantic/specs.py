@@ -190,6 +190,12 @@ class SemanticModel:
             for name, d in self.dimensions.items() if d.column in frame.columns
         }
 
+    def profile_counts(self, by_column: dict[str, int]) -> None:
+        """`profile`, from distinct counts a backend already computed."""
+        self.member_counts = {name: by_column[d.column]
+                              for name, d in self.dimensions.items()
+                              if d.column in by_column}
+
     # -- lookups -----------------------------------------------------------
 
     def dim(self, name: str) -> DimensionSpec:
@@ -275,6 +281,19 @@ class SemanticModel:
                 return (name,)
         return ()
 
+    def trend_periods(self, grain: str) -> int:
+        """How many periods a default trend covers at this calendar grain -
+        a year of fine periods, two years of coarse ones."""
+        return 12 if grain in ("day", "week", "month") else 8
+
+    def default_comparison(self, ctx: Context) -> str | None:
+        """The first declared comparison that is valid from this node. Used
+        wherever a move needs a reference period the analyst did not pick."""
+        for c in self.comparisons:
+            if self.is_valid(dataclasses.replace(ctx, comparison=c.name))[0]:
+                return c.name
+        return None
+
     # -- validation --------------------------------------------------------
 
     def validate(self, ctx: Context) -> None:
@@ -283,6 +302,11 @@ class SemanticModel:
             raise SemanticError(f"Context targets dataset '{ctx.dataset}', "
                                 f"model describes '{self.dataset}'")
         m = self.metric(ctx.metric)
+        if len(ctx.grain) > 2:
+            raise SemanticError("A view has at most two axes")
+        if len(set(ctx.grain)) != len(ctx.grain):
+            raise SemanticError(
+                f"'{self.label_of(ctx.grain[0])}' cannot be both axes")
         for g in ctx.grain:
             if g != self.time_column and g not in self.dimensions:
                 raise SemanticError(f"Unknown grain '{g}'")
@@ -299,7 +323,7 @@ class SemanticModel:
         if ctx.comparison:
             spec = self.comparison(ctx.comparison)
             shifted = spec.shift(ctx.time)
-            on_time = bool(ctx.grain) and ctx.grain[0] == self.time_column
+            on_time = self.time_column in ctx.grain
             # On a time series the comparison is applied per point, so a
             # shifted window that overlaps the plotted range is fine.
             if not on_time and shifted.end >= ctx.time.start:
@@ -347,76 +371,7 @@ class SemanticModel:
 
     def capabilities(self, ctx: Context) -> list[Capability]:
         """The analytical grammar available from this node, filtered to what
-        the metadata says is meaningful here."""
-        caps: list[Capability] = []
-        current = ctx.grain[0] if ctx.grain else None
-        on_time = current == self.time_column
-
-        # -- Composition ---------------------------------------------------
-        child = None
-        if not on_time:
-            child = self.child_dimension(current) if current else None
-            if child:
-                caps.append(Capability(
-                    "drill_down", f"Drill down to {self.label_of(child)}",
-                    (("dimension", child),), "Composition",
-                    f"Structural drill: {self.label_of(current)} -> "
-                    f"{self.label_of(child)}"))
-        for alt in self.alternative_dimensions(
-                ctx, exclude=(child,) if child else ())[:6]:
-            caps.append(Capability(
-                "decompose", f"Break down by {self.label_of(alt)}",
-                (("dimension", alt),), "Composition",
-                self.dimensions[alt].describes))
-        # -- Change --------------------------------------------------------
-        for cmp_ in self.comparisons:
-            if cmp_.name == ctx.comparison:
-                continue
-            probe = dataclasses.replace(ctx, comparison=cmp_.name)
-            if not self.is_valid(probe)[0]:
-                continue
-            caps.append(Capability(
-                "compare", f"Compare with {cmp_.label_for(ctx.time.grain)}",
-                (("period", cmp_.name),), "Change",
-                f"Reference: {cmp_.label_for(ctx.time.grain)}"))
-        if current and not on_time:
-            caps.append(Capability("change_contribution",
-                                   f"Break down change by "
-                                   f"{self.label_of(current)}", (), "Change",
-                                   "Rank children by their share of the "
-                                   "parent's movement"))
-
-        # -- Trend / Exception / Distribution ------------------------------
-        n = 12 if ctx.time.grain in ("month", "week", "day") else 8
-        caps.append(Capability("trend", f"Trend last {n} {ctx.time.grain}s",
-                               (("periods", str(n)),), "Trend",
-                               "Hold the scope fixed, show history"))
-        if current and not on_time:
-            caps.append(Capability("exceptions", "Find exceptions", (),
-                                   "Exception",
-                                   "Children unusual against their own history"))
-        if not on_time:
-            caps.append(Capability("distribution", "Show distribution", (),
-                                   "Distribution",
-                                   "The population underneath this aggregate"))
-
-        # -- Time grain ----------------------------------------------------
-        for g in self.grains:
-            if g != ctx.time.grain:
-                caps.append(Capability("set_grain", f"View by {g}",
-                                       (("grain", g),), "Trend",
-                                       f"Re-bucket the time axis to {g}"))
-
-        # -- Metric drill --------------------------------------------------
-        for name, m in self.metrics.items():
-            if name == ctx.metric:
-                continue
-            if current and current in m.invalid_grains:
-                continue
-            caps.append(Capability("switch_metric", f"Switch metric to {m.label}",
-                                   (("metric", name),), "Metric", m.describes))
-
-        # -- Explain -------------------------------------------------------
-        caps.insert(0, Capability("explain", "Explain this", (), "Explain",
-                                  "Rank deterministic evidence for this value"))
-        return caps
+        the metadata says is meaningful here. Each verb advertises itself -
+        see `core.operations.VERBS`."""
+        from ..core.operations import capabilities
+        return capabilities(self, ctx)

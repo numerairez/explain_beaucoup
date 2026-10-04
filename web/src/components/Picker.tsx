@@ -93,6 +93,9 @@ export function Picker({ onOpen }: { onOpen: (session: string) => void }) {
             <div className="text-[15px] font-semibold tracking-[-0.01em] text-ink">Explain Beaucoup</div>
             <div className="text-[12px] text-muted">An explorable graph of analytical contexts</div>
           </div>
+          <a href="#/guide" className="ml-auto rounded-lg px-2.5 py-1.5 text-[12.5px] font-medium text-ink-2 hover:bg-sunken hover:text-ink">
+            How it works →
+          </a>
         </header>
 
         <motion.h1
