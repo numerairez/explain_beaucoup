@@ -1,0 +1,38 @@
+# A canned dashboard: each tile is a list of verbs replayed from the
+# model's root. See explain_beaucoup/core/dashboard.py.
+title: Sales overview
+tiles:
+- id: revenue-this-month
+  title: Revenue this month
+  view: kpi
+  steps:
+  - drill_up
+  - compare: {period: mom}
+- id: margin-this-month
+  title: Margin this month
+  view: kpi
+  steps:
+  - drill_up
+  - switch_metric: {metric: margin}
+  - compare: {period: mom}
+- id: revenue-trend
+  title: Revenue, last 12 months
+  steps:
+  - drill_up
+  - trend: {periods: 12}
+- id: what-moved-revenue
+  title: What moved revenue
+  size: wide
+  steps:
+  - compare: {period: mom}
+  - change_contribution
+- id: revenue-by-channel
+  title: Revenue by channel
+  steps:
+  - decompose: {dimension: channel}
+  - compare: {period: mom}
+- id: unusual-provinces
+  title: Unusual provinces
+  steps:
+  - drill_down: {dimension: province}
+  - exceptions

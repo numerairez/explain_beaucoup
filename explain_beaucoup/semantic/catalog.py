@@ -31,6 +31,7 @@ from .loader import LoadedModel, ModelError, build, load_model_file
 from .specs import SemanticModel
 
 MODEL_SUFFIXES = (".yaml", ".yml")
+DASHBOARD_SUFFIX = ".dashboard.yaml"     # see core/dashboard.py
 
 
 class ScopeError(Exception):
@@ -61,6 +62,7 @@ class CatalogEntry:
     grains: tuple[str, ...] = ()
     data_path: Path | None = None
     error: str = ""
+    tiles: int = 0          # on the model's canned dashboard, if it has one
 
     @property
     def name(self) -> str:
@@ -128,6 +130,7 @@ def describe(path: str | Path) -> CatalogEntry:
         time_grain=model.time_grain,
         grains=tuple(model.grains),
         data_path=data_path,
+        tiles=_tile_count(p),
     )
 
 
@@ -141,15 +144,33 @@ def discover(directory: str | Path) -> list[CatalogEntry]:
     for p in sorted(d.iterdir()):
         if p.name.startswith("."):
             continue
-        if p.is_file() and p.suffix.lower() in MODEL_SUFFIXES:
+        if _is_model(p):
             found.append(p)
         elif p.is_dir():
             found += sorted(q for q in p.iterdir()
-                            if q.is_file() and not q.name.startswith(".")
-                            and q.suffix.lower() in MODEL_SUFFIXES)
+                            if _is_model(q) and not q.name.startswith("."))
     entries = [describe(p) for p in found]
     # Usable models first; within each group, alphabetically by display name.
     return sorted(entries, key=lambda e: (not e.ok, e.name.lower()))
+
+
+def _is_model(p: Path) -> bool:
+    # A model's dashboard sits beside it with the same suffix; it is not a
+    # model of its own.
+    return (p.is_file() and p.suffix.lower() in MODEL_SUFFIXES
+            and not p.name.endswith(DASHBOARD_SUFFIX))
+
+
+def _tile_count(model_path: Path) -> int:
+    """How many tiles the model's dashboard has, read cheaply; 0 when there
+    is none or it cannot be read (opening it will say why)."""
+    p = model_path.with_name(model_path.stem + DASHBOARD_SUFFIX)
+    try:
+        doc = yaml.safe_load(p.read_text()) if p.exists() else None
+    except (OSError, yaml.YAMLError):
+        return 0
+    tiles = doc.get("tiles") if isinstance(doc, dict) else None
+    return len(tiles) if isinstance(tiles, list) else 0
 
 
 def default_models_dir() -> Path:

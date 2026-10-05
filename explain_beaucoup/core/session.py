@@ -24,7 +24,7 @@ import pandas as pd
 from ..data.source import DataSource
 from ..engine.backend import Backend
 from ..engine.commentary import Commentary
-from ..engine.engine import AnalyticalEngine, normal_kind, title_for
+from ..engine.engine import TOTAL_KEY, AnalyticalEngine, normal_kind, title_for
 from ..engine.explain import Evidence, ExplanationResult, explain
 from ..semantic.specs import SemanticError, SemanticModel
 from ..view import format as fmt
@@ -34,7 +34,7 @@ from .graph import InvestigationGraph, Node
 from .journal import Journal, JournalEntry
 from .operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
                          MATRIX, TIMESERIES, Operation, aggregate_view, apply,
-                         narrow, result_kind, verb as verb_of)
+                         narrow, on_time, result_kind, verb as verb_of)
 
 
 # How a verb behaves on the stack is declared by the verb itself (see
@@ -43,6 +43,11 @@ from .operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
 def member_scoped(verb: str) -> bool:
     v = verb_of(verb)
     return bool(v and v.member_scoped)
+
+
+def carries_change(verb: str) -> bool:
+    v = verb_of(verb)
+    return bool(v and v.carries_change)
 
 
 def preserves_kind(verb: str) -> bool:
@@ -116,7 +121,8 @@ class Session:
     """One analyst's investigation over one governed table."""
 
     def __init__(self, data: Backend | DataSource | pd.DataFrame,
-                 model: SemanticModel) -> None:
+                 model: SemanticModel, *, root: Context | None = None,
+                 kind: str = BREAKDOWN, title: str = "") -> None:
         self.model = model
         self.engine = AnalyticalEngine(data, model)
         if not model.member_counts:
@@ -131,18 +137,14 @@ class Session:
         self._sel: dict[str, str | None] = {}
         self.journal_listeners: list[Callable[[JournalEntry], None]] = []
 
-        # The landing view is whatever the model declares, not a hardcoded one.
-        grain = model.first_grain()
-        metric = model.metric(model.default_metric)
-        root = Context.new(
-            model.dataset, model.default_metric,
-            TimeWindow.single(self.engine.latest(model.time_grain),
-                              model.time_grain),
-            grain=grain)
-        landed = self.navigate(
-            root, BREAKDOWN,
-            title=f"{metric.label} by {model.label_of(grain[0])}"
-                  if grain else metric.label)
+        # The landing view is whatever the model declares - or, opened from a
+        # dashboard tile, that tile's Context, so the investigation starts
+        # where the tile left off rather than at the model's front door.
+        if root is None:
+            root, title = root_context(model, self.engine)
+            kind = BREAKDOWN
+        landed = self.navigate(root, kind,
+                               title=title or self.node_title(root, kind))
         self._log(J.START, context=landed.node.context, kind=landed.node.kind,
                   uid=landed.node.uid, title=landed.node.title)
 
@@ -174,6 +176,15 @@ class Session:
     def periods(self, grain: str) -> list[str]:
         return self.engine.periods(grain)
 
+    @staticmethod
+    def _as_member(node: Node, key: str | None) -> str | None:
+        """A mark as the member a verb is scoped to - or None for marks that
+        are not members: the one bar of a total, and the points of a
+        distribution (single fact cells, with nothing under them)."""
+        if key == TOTAL_KEY or node.kind == DISTRIBUTION:
+            return None
+        return key
+
     def lens_of(self, node: Node | None = None) -> str | None:
         return LENS_OF_KIND.get((node or self.node).kind)
 
@@ -204,8 +215,9 @@ class Session:
         if existing is not None:
             node = existing                       # already on the stack
         elif branch and parent_uid:
-            node = self.graph.branch_from(parent_uid, ctx, kind=kind, op=op,
-                                          title=title)
+            node = self.graph.branch_from(
+                parent_uid, ctx, kind=kind, op=op,
+                title=title or self.node_title(ctx, kind))
         else:
             node = self.graph.add(ctx, kind=kind, op=op, parent=parent_uid,
                                   title=title or self.node_title(ctx, kind))
@@ -326,6 +338,7 @@ class Session:
             source: str = "ui") -> Landing | ExplanationResult:
         """Apply a verb to the chart on top. `explain` returns the
         explanation; every other verb returns where it landed."""
+        member = self._as_member(self.node, member)
         if verb == "explain":
             return self.explain(member=member)
         p = dict(params or {})
@@ -346,12 +359,25 @@ class Session:
         except Exception as exc:                              # pragma: no cover
             self._log_blocked(str(exc), verb, p)
             raise SemanticError(str(exc)) from exc
-        kind = result_kind(self.model, new_ctx, op)
-        if preserves_kind(verb) and kind == BREAKDOWN:
-            kind = (prior.kind if prior.kind not in (TIMESERIES, MATRIX)
-                    else BREAKDOWN)
-        landed = self.navigate(new_ctx, kind, op=op, branch=branch,
-                               in_place=in_place(verb))
+        kind = landing_kind(self.model, prior.kind, new_ctx, op)
+        natural = result_kind(self.model, new_ctx, op)
+        try:
+            landed = self.navigate(new_ctx, kind, op=op, branch=branch,
+                                   in_place=in_place(verb))
+        except SemanticError as exc:
+            if kind == natural:
+                raise
+            # The lens was only carried over, and it cannot be read here -
+            # too little history for exceptions, say. The move itself is
+            # fine: land on its own reading, and say why the lens was dropped.
+            self.journal.entries.pop()            # the blocked entry
+            kind = natural
+            landed = self.navigate(new_ctx, kind, op=op, branch=branch,
+                                   in_place=in_place(verb))
+            landed = Landing(landed.node, landed.reused, landed.below,
+                             message=f"{landed.message or landed.node.title}"
+                                     f"   ·   Shown as a "
+                                     f"{kind.replace('_', ' ')}: {exc}")
         self._log_landing(J.OPERATION, landed, prior, verb=verb, params=p,
                           source=source, context=new_ctx, kind=kind,
                           branch=branch)
@@ -360,6 +386,8 @@ class Session:
     def activate(self, uid: str, key: str) -> Landing | None:
         """Double-click: the most natural drill from here, opened below."""
         node = self.graph.nodes.get(uid) or self.node
+        if self._as_member(node, key) is None:
+            return None                   # nothing under a single point
         ctx = node.context
         current = ctx.grain[0] if ctx.grain else None
         child = self.model.child_dimension(current) if current else None
@@ -457,6 +485,11 @@ class Session:
         n = self.model.trend_periods(self.node.context.time.grain)
         params: dict[str, Any] = {"periods": n} if verb == "trend" else {}
         member = self.selected()
+        ctx = self.node.context
+        if verb in ("change_contribution", "exceptions") and (
+                not ctx.grain
+                or (len(ctx.grain) == 1 and on_time(self.model, ctx))):
+            return self._lens_by_first_dimension(verb, member)
         grain = self.node.context.grain
         if (hierarchy_scoped(verb) and member is not None
                 and not (grain and self.model.child_dimension(grain[0]))):
@@ -465,13 +498,50 @@ class Session:
             member = None
         return self.run(verb, params, member=member, source="lens")
 
+    def _lens_by_first_dimension(self, verb: str, member: str | None
+                                 ) -> Landing | None:
+        """A change or exceptions lens on a total or a time series has
+        nothing to attribute to. Split it by the first dimension on offer -
+        as the composition lens does - at the selected point of a series
+        (the latest by default), and land that one chart under it."""
+        prior = self.node
+        ctx = prior.context
+        alts = self.model.alternative_dimensions(ctx)
+        if not alts:
+            return None
+        params: dict[str, Any] = {"dimension": alts[0]}
+        if ctx.grain:                              # a time series
+            params["member"] = member or ctx.time.end
+        try:
+            split = apply(self.model, ctx, Operation.of(
+                "decompose", "lens", **params))
+            op = Operation.of(verb, "lens")
+            new_ctx = apply(self.model, split, op)
+        except SemanticError as exc:
+            self._log_blocked(str(exc), verb)
+            raise
+        kind = landing_kind(self.model, prior.kind, new_ctx, op)
+        landed = self.navigate(new_ctx, kind, op=op)
+        self._log_landing(J.OPERATION, landed, prior, verb=verb, params={},
+                          source="lens", context=new_ctx, kind=kind)
+        return landed
+
     # ------------------------------------------------------------------
     # explain
     # ------------------------------------------------------------------
 
     def explain(self, *, member: str | None = None) -> ExplanationResult:
-        """Explain the focus - or one member of it."""
+        """Explain the focus - or one member of it. On a time series the
+        member is a period: the point is explained, the latest by default."""
+        member = self._as_member(self.node, member)
         ctx = self.node.context
+        if len(ctx.grain) == 1 and on_time(self.model, ctx):
+            period = member or ctx.time.end
+            ctx = ctx.evolve(LineageStep(
+                "collapse", f"Read {period}", (("period", period),),
+                "explain"), grain=(),
+                time=TimeWindow.single(period, ctx.time.grain))
+            member = None
         if member and len(ctx.grain) == 2:
             # A cell of a matrix: pin both of its axes, then explain the value.
             filters, window = narrow(self.model, ctx, member)
@@ -536,11 +606,14 @@ class Session:
 
         heading = str(ctx)
         if key is not None:
-            heading = key
             row = self.result(node).row(key)
+            heading = row.label if row is not None else key
             if row is not None:
                 metric = self.model.metric(ctx.metric)
                 heading += f" — {fmt.value(metric, row.value, short=True)}"
+        # The total bar, or one point of a distribution, offers what the
+        # whole view offers; no item is scoped to it as if it were a member.
+        key = self._as_member(node, key)
 
         source = f"view:{node.uid}/mark={key}" if key else f"view:{node.uid}"
         by_group: dict[str, list] = {}
@@ -556,7 +629,27 @@ class Session:
             items: list[MenuItem] = []
             for cap in caps_in:
                 label = cap.label
-                if key is not None and hierarchy_scoped(cap.verb):
+                member = key
+                if node.kind == CHANGE and cap.verb == "change_contribution":
+                    continue      # already read as change; a split says it
+                if node.kind == CHANGE and key is not None and \
+                        carries_change(cap.verb):
+                    dim = self.model.label_of(cap.param_map["dimension"])
+                    label = f"Break down {key}'s change by {dim}"
+                elif key is not None and cap.verb == "cross":
+                    # A member crosses along its own hierarchy; a leaf, or a
+                    # point in time, has none, so the item is the chart's.
+                    grain = ctx.grain[0] if len(ctx.grain) == 1 else None
+                    child = (self.model.child_dimension(grain)
+                             if grain and grain != self.model.time_column
+                             else None)
+                    with_ = label.replace("Cross with ", "")
+                    if child is None:
+                        label, member = f"Cross this chart with {with_}", None
+                    else:
+                        label = (f"Cross {key} by "
+                                 f"{self.model.label_of(child)} × {with_}")
+                elif key is not None and hierarchy_scoped(cap.verb):
                     # Within one member these read along its hierarchy
                     # only; a leaf member has nowhere to go.
                     child = (self.model.child_dimension(ctx.grain[0])
@@ -574,7 +667,7 @@ class Session:
                     label = label.replace("Switch metric to ", "")
                 items.append(MenuItem(
                     label, verb=cap.verb, params=dict(cap.param_map),
-                    member=key, source=source, hint=cap.hint or "",
+                    member=member, source=source, hint=cap.hint or "",
                     submenu="Switch metric" if nested else "",
                     lands=lands(cap.verb)))
             if items:
@@ -625,7 +718,7 @@ class Session:
         if row is None:
             return ""
         metric = self.model.metric(node.context.metric)
-        bits = [f"{key}: {fmt.value(metric, row.value)}"]
+        bits = [f"{row.label}: {fmt.value(metric, row.value)}"]
         if row.share is not None:
             bits.append(f"{row.share:.1%} of total")
         if row.delta is not None:
@@ -689,6 +782,48 @@ class Session:
         entry = self.journal.record(action, **fields)
         for listener in self.journal_listeners:
             listener(entry)
+
+
+def landing_kind(model: SemanticModel, prior_kind: str, ctx: Context,
+                 op: Operation) -> str:
+    """The result family a move lands on, read from the node it came from.
+
+    The one place this is decided - the session, dashboard replay and the
+    "How it works" lab all ask here:
+
+    * the grain settles it first: two axes are a matrix, time a time series;
+    * a verb that re-frames the same node (a metric, period, comparison or
+      time grain) keeps the lens it was applied to;
+    * a verb that splits the population again keeps a *change* reading, so
+      breaking a +1.6M movement down shows how the 1.6M divides - not the two
+      periods side by side;
+    * a change reading needs a comparison and one dimension to attribute the
+      movement to; without them it falls back to a breakdown.
+    """
+    kind = result_kind(model, ctx, op)
+    if kind == BREAKDOWN:
+        if preserves_kind(op.verb) and prior_kind not in (TIMESERIES, MATRIX):
+            kind = prior_kind
+        elif carries_change(op.verb) and prior_kind == CHANGE:
+            kind = CHANGE
+    if kind == CHANGE and not (ctx.comparison and len(ctx.grain) == 1
+                               and not on_time(model, ctx)):
+        kind = BREAKDOWN
+    return kind
+
+
+def root_context(model: SemanticModel, engine: AnalyticalEngine
+                 ) -> tuple[Context, str]:
+    """Where an investigation starts by default, and what to call it: the
+    model's default metric, its landing grain, the latest period."""
+    grain = model.first_grain()
+    metric = model.metric(model.default_metric)
+    root = Context.new(
+        model.dataset, model.default_metric,
+        TimeWindow.single(engine.latest(model.time_grain), model.time_grain),
+        grain=grain)
+    return root, (f"{metric.label} by {model.label_of(grain[0])}"
+                  if grain else metric.label)
 
 
 def lands(verb: str) -> str:

@@ -69,6 +69,9 @@ class Verb:
     preserves_kind: ClassVar[bool] = False
     # Scoped to one member, reads along that member's hierarchy child.
     hierarchy_scoped: ClassVar[bool] = False
+    # Splits the same population a different way. A node read as change
+    # keeps being read as change, so a split of a movement is a movement.
+    carries_change: ClassVar[bool] = False
 
     def apply(self, model: SemanticModel, ctx: Context, p: dict[str, Any],
               op: Operation) -> Context:

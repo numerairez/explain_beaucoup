@@ -350,7 +350,10 @@ def _anomaly_signals(engine: AnalyticalEngine, model: SemanticModel,
                      dim_ctx: Context, dim: str) -> list[Evidence]:
     """Deviation from each member's own trailing baseline."""
     from ..core.operations import EXCEPTIONS
-    res = engine.execute(dim_ctx, EXCEPTIONS)
+    try:
+        res = engine.execute(dim_ctx, EXCEPTIONS)
+    except SemanticError:
+        return []                     # not enough history to call anything
     out: list[Evidence] = []
     label = model.label_of(dim)
     for r in res.rows[:3]:

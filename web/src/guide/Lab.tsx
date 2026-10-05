@@ -361,6 +361,7 @@ function StageDetail({ stage }: { stage: Stage }) {
           <div className="mt-1.5 flex flex-wrap gap-1">
             <Flag on={d.member_scoped}>member_scoped</Flag>
             <Flag on={d.preserves_kind}>preserves_kind</Flag>
+            <Flag on={d.carries_change}>carries_change</Flag>
             <Flag on={d.hierarchy_scoped}>hierarchy_scoped</Flag>
             <span className="inline-flex items-center rounded-md bg-sunken px-1.5 py-px text-[10.5px] font-medium text-ink-2">placement="{d.placement}"</span>
           </div>
@@ -400,7 +401,7 @@ function StageDetail({ stage }: { stage: Stage }) {
       return (
         <div className={box}>
           Read as <Mono>{d.kind}</Mono>
-          {d.preserved && <span className="text-muted"> - kept from the node before, because the verb only re-reads the same node (preserves_kind)</span>}
+          {d.preserved && <span className="text-muted"> - kept from the node before - a re-framing keeps its lens (preserves_kind), and a split of a change reading stays one (carries_change)</span>}
         </div>
       );
     case "engine":

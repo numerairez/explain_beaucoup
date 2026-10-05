@@ -34,6 +34,7 @@ class DrillDown(Verb):
     """One level down a declared hierarchy."""
     name = "drill_down"
     member_scoped = True
+    carries_change = True
 
     def apply(self, model, ctx, p, op):
         dim = need(p, "dimension", self.name)
@@ -73,6 +74,7 @@ class Decompose(Verb):
     """The same population, split by a different, unrelated dimension."""
     name = "decompose"
     member_scoped = True
+    carries_change = True
 
     def apply(self, model, ctx, p, op):
         dim = need(p, "dimension", self.name)
@@ -80,6 +82,13 @@ class Decompose(Verb):
         filters, window = narrow(model, ctx, member)
         scope = f"{member} " if member else ""
         grain = (dim,) if member else (dim,) + _rest(ctx)
+        if member is None and on_time(model, ctx) and ctx.comparison:
+            # Leaving a time axis for an aggregate: the whole window cannot
+            # be compared with a reference that overlaps it, so read the
+            # period the series ends on - as a matrix does when it drops time.
+            probe = dataclasses.replace(ctx, grain=grain)
+            if not model.is_valid(probe)[0]:
+                window = TimeWindow.single(ctx.time.end, ctx.time.grain)
         return ctx.evolve(
             self.step(f"Explain {scope}by {model.label_of(dim)}", p, op),
             filters=filters, grain=grain, time=window)
@@ -98,9 +107,14 @@ class Decompose(Verb):
 @register_verb
 class Cross(Verb):
     """Add a second axis: the value by two dimensions at once, or by a
-    dimension over time. The result is a matrix."""
+    dimension over time. The result is a matrix.
+
+    Scoped to one member, the member is pinned and its next level down
+    becomes the rows: Laguna crossed with Channel is Laguna's cities by
+    channel. A member with no level below would cross into a single row, so
+    that is refused; a point on a time axis crosses the whole chart."""
     name = "cross"
-    member_scoped = False
+    member_scoped = True
 
     def apply(self, model, ctx, p, op):
         dim = need(p, "dimension", self.name)
@@ -109,6 +123,18 @@ class Cross(Verb):
                 "Cross needs a view broken down by exactly one axis - "
                 "break the value down first.")
         current = ctx.grain[0]
+        member = p.get("member")
+        if member is not None and current != model.time_column:
+            child = model.child_dimension(current)
+            if child is None:
+                raise SemanticError(
+                    f"{member} has no level below "
+                    f"{model.label_of(current)} to cross. Cross the whole "
+                    f"chart instead, or use 'Break down by'.")
+            filters, window = narrow(model, ctx, member)
+            ctx = dataclasses.replace(ctx, filters=Context._freeze(filters),
+                                      time=window, grain=(child,))
+            current = child
         if dim == current:
             raise SemanticError(
                 f"'{model.label_of(dim)}' is already the axis of this view")
@@ -130,8 +156,13 @@ class Cross(Verb):
         if len(ctx.grain) != 1:
             return []
         current = ctx.grain[0]
+        # The level below nests inside this one: crossing with it is a
+        # mostly empty grid, and drilling down already shows it.
+        child = (model.child_dimension(current)
+                 if current != model.time_column else None)
         caps: list[Capability] = []
-        for alt in model.alternative_dimensions(ctx)[:3]:
+        for alt in model.alternative_dimensions(
+                ctx, exclude=(child,) if child else ())[:3]:
             caps.append(Capability(
                 self.name, f"Cross with {model.label_of(alt)}",
                 (("dimension", alt),), "Composition",
@@ -152,6 +183,7 @@ class DrillUp(Verb):
     """One level up the hierarchy - or out of a matrix, back to its rows."""
     name = "drill_up"
     placement = "replace"
+    carries_change = True
 
     def apply(self, model, ctx, p, op):
         if len(ctx.grain) == 2:
@@ -389,6 +421,7 @@ class SetGrain(Verb):
     """Re-bucket the calendar: month to quarter to year."""
     name = "set_grain"
     placement = "replace"
+    preserves_kind = True
 
     def apply(self, model, ctx, p, op):
         grain = need(p, "grain", self.name)

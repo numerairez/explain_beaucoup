@@ -366,6 +366,7 @@ export function Registry({ lab }: { lab: LabState }) {
                       <div className="flex flex-wrap gap-1">
                         <Flag on={v.member_scoped}>member</Flag>
                         <Flag on={v.preserves_kind}>keeps kind</Flag>
+                        <Flag on={v.carries_change}>keeps change</Flag>
                         <Flag on={v.hierarchy_scoped}>hierarchy</Flag>
                         <Flag on={v.advertises}>advertises</Flag>
                       </div>

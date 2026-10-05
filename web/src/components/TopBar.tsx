@@ -1,12 +1,26 @@
 import * as DM from "@radix-ui/react-dropdown-menu";
-import { ArrowLeft, BookOpen, ChevronRight, CornerLeftUp, Download, GitBranch, Moon, Pin, PinOff, Search, Sparkles, Sun } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronLeft, ChevronRight, CornerLeftUp, Download, GitBranch, LayoutDashboard, Moon, Pin, PinOff, Search, Sparkles, Sun } from "lucide-react";
+import { toast } from "sonner";
 import { api } from "../api";
 import { useWorkspace } from "../store";
 import { IconButton, Kbd, Logo, PillSelect, Tip } from "../ui";
 
 export function TopBar() {
-  const { snap, act, theme, setTheme, setPalette, leave } = useWorkspace();
+  const { snap, act, theme, setTheme, setPalette, leave, toDashboard, reload } = useWorkspace();
   const t = snap.toolbar;
+
+  // The chart on top becomes a tile: its lineage, replayed from the root.
+  const addToDashboard = async () => {
+    try {
+      const r = await api.addTile(snap.session, snap.current);
+      await reload();
+      toast(`Added “${r.title}” to the dashboard`, {
+        description: `${r.tiles} ${r.tiles === 1 ? "tile" : "tiles"} · saved to ${r.file}`,
+      });
+    } catch (e) {
+      toast.error("Could not add it to the dashboard", { description: String((e as Error).message) });
+    }
+  };
 
   const exportReport = async () => {
     const text = await api.exportReport(snap.session);
@@ -24,9 +38,24 @@ export function TopBar() {
             <Logo size={26} />
           </button>
         </Tip>
+        {toDashboard && (
+          <Tip label="Back to the dashboard - this investigation stays open on its tile">
+            <button
+              onClick={toDashboard}
+              className="inline-flex h-8 shrink-0 items-center gap-1 rounded-lg border border-line bg-raised pr-2 pl-1.5 text-[12px] font-medium text-ink-2 shadow-sm transition-colors hover:border-line-strong hover:text-ink 2xl:pr-2.5"
+            >
+              <ChevronLeft className="size-3.5" />
+              <LayoutDashboard className="size-3.5 text-accent" />
+              <span className="hidden 2xl:inline">Dashboard</span>
+            </button>
+          </Tip>
+        )}
         <div className="min-w-0 leading-tight">
-          <div className="truncate text-[13.5px] font-semibold tracking-[-0.01em] text-ink">{snap.title}</div>
+          <div className="truncate text-[13.5px] font-semibold tracking-[-0.01em] text-ink">
+            {snap.board.tile_title ?? snap.title}
+          </div>
           <div className="truncate text-[11px] text-muted">
+            {snap.board.tile_title && "Dashboard tile · "}
             {snap.scope_label ? (
               <span className="inline-flex items-center gap-1">
                 <span className="size-1.5 rounded-full bg-offset" />
@@ -96,6 +125,16 @@ export function TopBar() {
             {t.pinned ? <PinOff className="size-4" /> : <Pin className="size-4" />}
           </IconButton>
         </Tip>
+        <Tip label="Ask the grammar" keys="⌘K">
+          <IconButton className="2xl:hidden" onClick={() => setPalette(true)}>
+            <Search className="size-4" />
+          </IconButton>
+        </Tip>
+        <Tip label="Add this chart to the dashboard">
+          <IconButton onClick={addToDashboard}>
+            <LayoutDashboard className="size-4" />
+          </IconButton>
+        </Tip>
         <Tip label="Export the investigation as markdown">
           <IconButton onClick={exportReport}>
             <Download className="size-4" />
@@ -114,7 +153,7 @@ export function TopBar() {
         <span className="mx-1.5 h-5 w-px bg-line" />
         <button
           onClick={() => setPalette(true)}
-          className="hidden h-8 items-center gap-2 rounded-lg border border-line bg-raised pr-1.5 pl-2.5 text-[12px] text-muted shadow-sm transition-colors hover:border-line-strong hover:text-ink-2 xl:inline-flex"
+          className="hidden h-8 items-center gap-2 rounded-lg border border-line bg-raised pr-1.5 pl-2.5 text-[12px] text-muted shadow-sm transition-colors hover:border-line-strong hover:text-ink-2 2xl:inline-flex"
         >
           <Search className="size-3.5" />
           Ask the grammar…

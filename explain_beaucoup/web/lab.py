@@ -22,7 +22,7 @@ from typing import Any
 from ..core.context import Context
 from ..core.operations import (VERBS, Operation, OperationError,
                                result_kind)
-from ..core.session import Session, lands
+from ..core.session import Session, landing_kind, lands
 from ..engine import explain as explain_mod
 from ..engine.backend import PERIOD
 from ..engine.engine import ANALYSES, normal_kind, title_for
@@ -151,6 +151,7 @@ def step(session: Session, ctx_dict: dict[str, Any], verb: str,
         "name": v.name, "class": type(v).__name__, "doc": _doc(type(v)),
         "member_scoped": v.member_scoped, "placement": v.placement,
         "preserves_kind": v.preserves_kind,
+        "carries_change": v.carries_change,
         "hierarchy_scoped": v.hierarchy_scoped}})
 
     try:
@@ -170,12 +171,8 @@ def step(session: Session, ctx_dict: dict[str, Any], verb: str,
         return out
     stages.append({"stage": "validate", "ok": True, "detail": {}})
 
-    k = result_kind(model, after, op)
-    preserved = False
-    if v.preserves_kind and k == "breakdown" and kind not in (
-            "timeseries", "matrix"):
-        preserved = k != kind
-        k = kind
+    k = landing_kind(model, kind, after, op)
+    preserved = k != result_kind(model, after, op) and k == kind
     stages.append({"stage": "kind", "ok": True,
                    "detail": {"kind": k, "preserved": preserved}})
 
@@ -238,6 +235,7 @@ def registry(session: Session) -> dict[str, Any]:
                    "module": type(v).__module__, "doc": _doc(type(v)),
                    "member_scoped": v.member_scoped, "placement": v.placement,
                    "preserves_kind": v.preserves_kind,
+                   "carries_change": v.carries_change,
                    "hierarchy_scoped": v.hierarchy_scoped,
                    "advertises": type(v).advertise is not
                    type(v).__mro__[-2].advertise}

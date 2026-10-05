@@ -73,6 +73,8 @@ export type Theme = "light" | "dark";
 
 export type Snapshot = {
   session: string;
+  /** The board this session belongs to, and the tile it was dug out of. */
+  board: { id: string; tiles: number; tile: string | null; tile_title: string | null };
   title: string;
   scope_label: string;
   theme: Theme;
@@ -161,6 +163,8 @@ export type CatalogEntry = {
   problem: string;
   metrics: string[];
   dimensions: string[];
+  /** Tiles on the model's canned dashboard; 0 when it has none. */
+  tiles: number;
 };
 
 export type EntryDetail = {
@@ -198,6 +202,49 @@ export type Preview = {
   label: string;
 };
 
+export type Delta = { text: string; pct: number | null; up: boolean; tone: "good" | "critical"; comparison: string };
+
+export type BoardTile = {
+  id: string;
+  title: string;
+  size: "normal" | "wide";
+  view: string | null;
+  steps: string[];
+  /** Set when the model refuses one of the tile's steps under this scope. */
+  error?: string;
+  kind?: string;
+  context?: string;
+  subtitle?: string;
+  headline?: { value: string; metric: string; period: string; delta: Delta | null } | null;
+  why?: { headline: string; label: string; role: Evidence["role"] } | null;
+  /** Members unusual against their own history; null when not read. */
+  exceptions?: number | null;
+  renderer?: string;
+  spec?: Record<string, unknown> | null;
+  empty?: boolean;
+  investigation: null | {
+    session: string;
+    views: number;
+    at: string | null;
+    pins: { uid: string; title: string; note: string; value: string }[];
+  };
+};
+
+export type Board = {
+  board: string;
+  title: string;
+  dataset: string;
+  scope_label: string;
+  file: string;
+  error: string;
+  period: string;
+  free: string | null;
+  tiles: BoardTile[];
+};
+
+/** Where opening a dataset lands: its dashboard, or straight in a session. */
+export type Opened = { board: string; session: string | null };
+
 export class ApiError extends Error {}
 
 async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -223,12 +270,21 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 const q = (o: Record<string, string>) => "?" + new URLSearchParams(o).toString();
 
 export const api = {
-  boot: () => call<{ session: string | null; models_dir: string }>("GET", "/api/boot"),
+  boot: () => call<{ session: string | null; board: string | null; models_dir: string }>("GET", "/api/boot"),
   catalog: () => call<{ models_dir: string; entries: CatalogEntry[] }>("GET", "/api/catalog"),
   entry: (i: number) => call<EntryDetail>("GET", `/api/catalog/${i}`),
   preview: (i: number, scope: ScopeIn) => call<Preview>("POST", `/api/catalog/${i}/preview`, scope),
-  open: (entry: number, scope: ScopeIn) =>
-    call<{ session: string }>("POST", "/api/sessions", { entry, ...scope }),
+  open: (entry: number, scope: ScopeIn) => call<Opened>("POST", "/api/boards", { entry, ...scope }),
+  board: (bid: string, theme: Theme) => call<Board>("GET", `/api/boards/${bid}${q({ theme })}`),
+  investigate: (bid: string, tile: string, key: string | null) =>
+    call<{ session: string; uid: string; key: string | null }>(
+      "POST", `/api/boards/${bid}/tiles/${encodeURIComponent(tile)}/investigate`, { key }),
+  explore: (bid: string) => call<{ session: string }>("POST", `/api/boards/${bid}/explore`),
+  removeTile: (bid: string, tile: string, theme: Theme) =>
+    call<Board>("DELETE", `/api/boards/${bid}/tiles/${encodeURIComponent(tile)}${q({ theme })}`),
+  addTile: (sid: string, uid: string | null, title = "") =>
+    call<{ tile: string; title: string; board: string; tiles: number; file: string }>(
+      "POST", `/api/sessions/${sid}/dashboard`, { uid, title }),
   snapshot: (sid: string, theme: Theme, layout: Layout) =>
     call<Snapshot>("GET", `/api/sessions/${sid}${q({ theme, layout })}`),
   move: (sid: string, move: Move, theme: Theme, layout: Layout) =>

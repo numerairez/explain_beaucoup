@@ -3,13 +3,13 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowRight, Check, ChevronDown, CircleAlert, Database, Info, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
-import type { CatalogEntry, EntryDetail, Preview } from "../api";
+import type { CatalogEntry, EntryDetail, Opened, Preview } from "../api";
 import { cn, Logo, PillSelect, SectionLabel } from "../ui";
 
 type Filter = { id: number; dim: string; members: string[] };
 let nextId = 1;
 
-export function Picker({ onOpen }: { onOpen: (session: string) => void }) {
+export function Picker({ onOpen }: { onOpen: (opened: Opened) => void }) {
   const [entries, setEntries] = useState<CatalogEntry[] | null>(null);
   const [dir, setDir] = useState("");
   const [index, setIndex] = useState<number | null>(null);
@@ -73,8 +73,7 @@ export function Picker({ onOpen }: { onOpen: (session: string) => void }) {
     if (!detail || !scope) return;
     setOpening(true);
     try {
-      const { session } = await api.open(detail.index, scope);
-      onOpen(session);
+      onOpen(await api.open(detail.index, scope));
     } catch (e) {
       setLoadError(String((e as Error).message));
       setOpening(false);
@@ -140,7 +139,10 @@ export function Picker({ onOpen }: { onOpen: (session: string) => void }) {
                   </span>
                   <div className="min-w-0">
                     <div className="truncate text-[13.5px] font-semibold text-ink">{e.name}</div>
-                    <div className={cn("truncate text-[11.5px]", e.ok ? "text-muted" : "text-critical")}>{e.summary}</div>
+                    <div className={cn("truncate text-[11.5px]", e.ok ? "text-muted" : "text-critical")}>
+                      {e.summary}
+                      {e.ok && e.tiles > 0 && ` · dashboard of ${e.tiles}`}
+                    </div>
                   </div>
                 </div>
               </button>
@@ -281,7 +283,9 @@ export function Picker({ onOpen }: { onOpen: (session: string) => void }) {
                     onClick={open}
                     className="inline-flex h-11 items-center gap-2 rounded-xl bg-accent px-5 text-[13.5px] font-semibold text-accent-ink shadow-md transition-all hover:brightness-110 active:scale-[0.98] disabled:opacity-40"
                   >
-                    {opening ? "Opening…" : scoped ? "Open scoped workspace" : "Open workspace"}
+                    {opening
+                      ? "Opening…"
+                      : `Open ${scoped ? "scoped " : ""}${entries?.find((e) => e.index === index)?.tiles ? "dashboard" : "workspace"}`}
                     <ArrowRight className="size-4" />
                   </button>
                 </div>

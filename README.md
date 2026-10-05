@@ -39,6 +39,45 @@ writes to the session it borrows.
 Keys: `⌘K` command palette · `E` explain · `P` pin · `U` drill up ·
 `[` back · `B` branch · `D` dark mode.
 
+### Dashboards: canned starting points for an investigation
+
+A model can carry a dashboard in `<model>.dashboard.yaml` beside it. When it
+does, the web app opens the dataset on that dashboard instead of on a chart.
+The workspace above sits one layer down: **Dig deeper** on a tile opens it
+rooted at that tile, with nothing taken away.
+
+```yaml
+# models/sales.dashboard.yaml
+title: Sales overview
+tiles:
+- title: Revenue this month
+  view: kpi                         # the headline number alone
+  steps: [drill_up, {compare: {period: mom}}]
+- title: What moved revenue
+  size: wide
+  steps: [{compare: {period: mom}}, change_contribution]
+```
+
+* **A tile is a list of verbs, not a saved chart.** It is replayed from the
+  model's root through `apply()` every time the dashboard is read. A tile the
+  model would refuse is reported by `check`, naming the step. The
+  investigation it opens carries the lineage that got there. And because the
+  root is always the latest period, the dashboard rolls forward with the data.
+* **Each tile shows** its headline number and change, a **why** line (the
+  explain engine's strongest evidence, preferring the tile's own split), and
+  a count of members that are unusual against their own history. Every number
+  comes from the same engine and registries as the workspace.
+* **Clicking a mark** on a tile opens the investigation with that mark
+  selected and its governed menu already open.
+* **Each tile keeps one investigation.** Coming back to the tile resumes it.
+  Pins made while digging flow back onto the tile as findings.
+* **Build it by investigating.** *Add to dashboard* (the grid icon in the
+  workspace top bar) saves the chart on top as a tile. Its lineage becomes
+  the steps, and it is proven by replaying it before it is written. A view
+  reached only through explain evidence is refused by name, since it would
+  not replay.
+* A model with no dashboard opens straight into the workspace, as before.
+
 ## Use it with your own data
 
 The framework is not built around the demo dataset. Everything — drill paths,
@@ -175,6 +214,15 @@ CHILDREN CHARTS   2 views drilled out of the chart above
   comparison — replace the top chart instead of stacking under it.
 * The same drill twice scrolls to the chart that already exists rather than
   stacking a duplicate; `x` closes a chart and everything drilled out of it.
+* A chart keeps the way it is read. A re-framing (metric, period, comparison,
+  time grain) keeps its lens. Splitting a *What moved* chart again (drill
+  down, break down by, drill up, branch) stays a change chart, so breaking
+  Luzon's +₱1.6M down by segment shows how the ₱1.6M divides, not the two
+  periods side by side. A change reading falls back to a breakdown where it
+  cannot be read: with no comparison, at the total, or focused on one member,
+  which would own 100% of its own movement. `landing_kind()` in
+  `core/session.py` decides all of this, for the session, dashboard replay and
+  the lab alike.
 
 ## Layers
 
@@ -223,7 +271,7 @@ no verb can produce a node the model would reject.
 | `decompose` | `dimension`, `member?` | Breaks the same population down by a **different, unrelated** dimension: Luzon → by Channel. Free of hierarchy constraints, so this is the lateral move — but the menu only offers dimensions the model says are meaningful here. |
 | `drill_up` | — | Steps back up the hierarchy, dropping the filter that pinned the parent level. At the top level it goes to the scope total (`grain=()`). Refused with "Already at the top of this path" when there is no grain at all. |
 | `focus` | `dimension`, `member` | Narrows the scope but **keeps the grain** — "show me only this member", as opposed to "break this member down". |
-| `cross` | `dimension`, `periods?` | Adds a **second axis**: Region × Channel, or Region × time over the trailing *n* periods. The node becomes a `matrix`, drawn as a heatmap. Time always runs along the columns. A matrix cannot be crossed again. |
+| `cross` | `dimension`, `periods?`, `member?` | Adds a **second axis**: Region × Channel, or Region × time over the trailing *n* periods. The node becomes a `matrix`, drawn as a heatmap. Time always runs along the columns. A matrix cannot be crossed again. With a `member` it crosses that member along its hierarchy: Laguna × Channel is Laguna's cities by channel. A member with no level below is refused, and the menu offers the whole chart instead. The view's own child level is never offered as a cross, because it nests inside the rows and would be a mostly empty grid. |
 
 Both drills and `decompose` share one subtlety worth knowing. If the current
 grain is the *time* column, the member you clicked is a period, not a
@@ -312,7 +360,7 @@ the menu, the session, the commentary and every front end pick it up.
 
 | To add | Register with | It owns |
 |---|---|---|
-| A verb | `@register_verb` on a `Verb` subclass (`core/operations.py`) | `apply`, `advertise` (its menu entries), `kind`, and the flags the session reads: `member_scoped`, `placement` (`"replace"` / `"below"`), `preserves_kind`, `hierarchy_scoped` |
+| A verb | `@register_verb` on a `Verb` subclass (`core/operations.py`) | `apply`, `advertise` (its menu entries), `kind`, and the flags the session reads: `member_scoped`, `placement` (`"replace"` / `"below"`), `preserves_kind`, `carries_change`, `hierarchy_scoped` |
 | Its commentary | `register_phrase(verb, fn)` (`engine/commentary.py`) | How the move is told. Without one, the lineage summary is used. |
 | A result family | `@register_analysis(kind, title=...)` (`engine/engine.py`) | `compute(engine, ctx) -> ResultHandle`, built on `engine.aggregate` |
 | A view | `register_view(kind, build, renderer=...)` (`view/vega.py`) | The spec, and which front-end component draws it |
@@ -385,6 +433,18 @@ drifting apart.
 * **`change_contribution` and `exceptions` require a dimensional grain.** At
   the total or time grain there are no children to attribute the movement to,
   and the error says which case you are in and what to do about it.
+* **Exceptions need history, and say so when there is not enough.** A member
+  needs 4 earlier periods before it can be called unusual. If no member has
+  them (year grain on two years of data, say), the result is refused by name
+  rather than drawn as an empty chart that reads as "nothing unusual". A lens
+  carried over by a re-framing falls back to the move's own reading and says
+  why.
+* **Not every mark is a member.** The one bar of a total and the points of a
+  distribution (single fact cells) offer the whole view's menu; nothing is
+  scoped to them as if it were a dimension member.
+* **A lens with nothing to attribute to splits first.** Change or Exception
+  on a total or a time series reads the selected point (the latest by
+  default) by the first dimension on offer, as Composition does.
 * **A comparison whose reference window would overlap the window being
   analysed is refused** — on aggregates. On a time series the comparison is
   applied per point, so an overlapping shifted window is fine and is allowed.
@@ -585,7 +645,7 @@ ratio at an invalid grain or do arithmetic of its own.
 | 3 | Explain engine | Done |
 | 4 | Branching graph | Done (branch, pin, revisit, report) |
 | 5 | AI sidecar | Seam + contract built; no model wired |
-| 6 | Dashboard builder | Not started — deliberately, per the plan |
+| 6 | Dashboard builder | Started — canned dashboards of replayable tiles that open into the workspace (web only); saved layouts and resizing not yet |
 
 ## Tests
 

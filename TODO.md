@@ -26,7 +26,8 @@ These three fork the design, so they are recorded rather than re-argued:
   `ctx.dataset == model.dataset` (`semantic/specs.py`). One governed table per
   model stays a constraint of the design — but say so in the docs rather than
   leaving people to discover it.
-* **A dashboard builder.** Still phase 6, still deliberately not started.
+* **A dashboard builder.** Phase 6. Canned dashboards exist (`core/dashboard.py`,
+  web only); a visual layout builder is still not started.
 * **Changing any threshold, weight or ranking.** Phase 6 below moves the
   literals into a policy object; it does not retune them.
 

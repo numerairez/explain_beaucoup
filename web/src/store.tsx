@@ -25,6 +25,10 @@ type Store = {
   setRightTab: (t: RightTab) => void;
   setPalette: (open: boolean) => void;
   leave: () => void;
+  /** Back to the board this session was opened from; null without one. */
+  toDashboard: (() => void) | null;
+  /** Re-read the snapshot - after a change made outside a move. */
+  reload: () => Promise<void>;
 };
 
 const Ctx = createContext<Store | null>(null);
@@ -57,10 +61,15 @@ export function applyTheme(t: Theme) {
 export function WorkspaceProvider({
   initial,
   onLeave,
+  onDashboard,
+  initialMenu,
   children,
 }: {
   initial: Snapshot;
   onLeave: () => void;
+  onDashboard?: (board: string) => void;
+  /** A mark dug into from a dashboard tile: its menu opens on arrival. */
+  initialMenu?: { uid: string; key: string } | null;
   children: ReactNode;
 }) {
   const [snap, setSnap] = useState(initial);
@@ -158,13 +167,27 @@ export function WorkspaceProvider({
 
   useEffect(() => applyTheme(theme), [theme]);
 
+  const opened = useRef(false);
+  useEffect(() => {
+    if (!initialMenu || opened.current) return;
+    opened.current = true;
+    void openMenu(initialMenu.uid, initialMenu.key, Math.round(window.innerWidth * 0.42), 190);
+  }, [initialMenu, openMenu]);
+
+  const board = snap.board;
+  const toDashboard = useMemo(
+    () => (onDashboard && board.tiles > 0 ? () => onDashboard(board.id) : null),
+    [onDashboard, board.id, board.tiles],
+  );
+  const reload = useCallback(() => refresh(view.current.theme, view.current.layout), [refresh]);
+
   const value = useMemo<Store>(
     () => ({
       snap, busy, theme, layout, hint, rightTab, menu, palette,
       act, openMenu, closeMenu: () => setMenu(null),
-      setTheme, setLayout, setRightTab, setPalette, leave: onLeave,
+      setTheme, setLayout, setRightTab, setPalette, leave: onLeave, toDashboard, reload,
     }),
-    [snap, busy, theme, layout, hint, rightTab, menu, palette, act, openMenu, setTheme, setLayout, onLeave],
+    [snap, busy, theme, layout, hint, rightTab, menu, palette, act, openMenu, setTheme, setLayout, onLeave, toDashboard, reload],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

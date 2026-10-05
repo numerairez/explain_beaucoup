@@ -89,6 +89,165 @@ def test_a_re_framing_verb_keeps_the_lens(s):
     assert s.node.kind == CHANGE                    # still read as a change
 
 
+def change_on_top(s: Session, period: str = "yoy") -> None:
+    s.run("compare", {"period": period})
+    s.raise_node(s.run("change_contribution", {}).node.uid)
+    assert s.node.kind == CHANGE
+
+
+@pytest.mark.parametrize("verb, params", [
+    ("decompose", {"dimension": "customer_segment"}),
+    ("decompose", {"dimension": "channel"}),
+    ("drill_down", {"dimension": "province"}),
+])
+def test_splitting_a_movement_keeps_reading_it_as_change(s, verb, params):
+    """Breaking Luzon's +1.6M down shows how the 1.6M divides - not this
+    period and the reference side by side."""
+    change_on_top(s)
+    luzon = s.result().row("Luzon")
+    landed = s.run(verb, params, member="Luzon")
+    assert landed.node.kind == CHANGE
+    res = s.result(landed.node)
+    assert res.delta_total == pytest.approx(luzon.delta)
+    assert sum(r.delta for r in res.rows) == pytest.approx(luzon.delta)
+    assert "Luzon" in landed.node.title
+
+
+def test_every_way_of_splitting_a_change_chart_keeps_it(s):
+    change_on_top(s)
+    top = s.node.uid
+    assert s.activate(top, "Luzon").node.kind == CHANGE      # double-click
+    assert s.branch("channel").node.kind == CHANGE
+    assert s.set_time_grain("quarter").node.kind == CHANGE
+    s.goto(top)
+    inner = s.run("drill_down", {"dimension": "province"}, member="Luzon")
+    s.raise_node(inner.node.uid)
+    assert s.run("drill_up", {}).node.kind == CHANGE
+
+
+def test_change_falls_back_where_it_cannot_be_read(s):
+    change_on_top(s)
+    top = s.node.uid
+    # Pinned to one member, the bar would own 100% of its own movement.
+    assert s.run("focus", {"dimension": "region"},
+                 member="Luzon").node.kind == BREAKDOWN
+    s.goto(top)
+    # Nothing to move against.
+    assert s.run("clear_comparison", {}).node.kind == BREAKDOWN
+    s.goto(top)
+    # The total has no children to attribute the movement to.
+    assert s.run("drill_up", {}).node.kind == BREAKDOWN
+
+
+def test_a_change_chart_menu_says_what_a_split_shows(s):
+    change_on_top(s)
+    menu = s.menu(s.node.uid, "Luzon")
+    items = [it for g in menu.groups for it in g]
+    labels = [it.label for it in items]
+    assert "Break down Luzon's change by Customer Segment" in labels
+    assert "Break down Luzon's change by Province" in labels
+    # Already read as change: the separate change item would duplicate the
+    # drill, so it is not offered.
+    assert not any(it.verb == "change_contribution" for it in items)
+
+
+def test_crossing_a_member_crosses_it_along_its_hierarchy(s):
+    """Laguna crossed with Channel is Laguna's cities by channel - not the
+    whole chart it was clicked on."""
+    change_on_top(s, "mom")
+    prov = s.run("drill_down", {"dimension": "province"}, member="Luzon")
+    s.raise_node(prov.node.uid)
+    menu = s.menu(s.node.uid, "Laguna")
+    item = next(it for g in menu.groups for it in g
+                if it.verb == "cross" and it.params["dimension"] == "channel")
+    assert item.label == "Cross Laguna by City × Channel"
+    landed = s.invoke(s.node.uid, item)
+    ctx = landed.node.context
+    assert ctx.grain == ("city", "channel")
+    assert ctx.filter_map == {"region": "Luzon", "province": "Laguna"}
+    assert "Laguna" in landed.node.title
+
+
+def test_a_leaf_or_a_period_crosses_the_whole_chart(s):
+    city = s.run("drill_down", {"dimension": "province"}, member="Luzon")
+    s.raise_node(city.node.uid)
+    city = s.run("drill_down", {"dimension": "city"}, member="Laguna")
+    s.raise_node(city.node.uid)
+    leaf = s.result().rows[0].key
+    items = [it for g in s.menu(s.node.uid, leaf).groups for it in g
+             if it.verb == "cross"]
+    assert items and all(it.label.startswith("Cross this chart with")
+                         and it.member is None for it in items)
+    with pytest.raises(SemanticError, match="no level below City"):
+        s.run("cross", {"dimension": "channel"}, member=leaf)
+
+
+def test_the_level_below_is_not_offered_as_a_cross(s):
+    crosses = [it.params["dimension"] for g in s.menu(s.node.uid).groups
+               for it in g if it.verb == "cross"]
+    assert "province" not in crosses        # Region's own child level
+
+
+def test_too_little_history_for_exceptions_is_said_not_drawn(s):
+    s.run("set_grain", {"grain": "year"})
+    with pytest.raises(SemanticError, match="at least 4 earlier years"):
+        s.run("exceptions", {})
+
+
+def test_a_carried_lens_that_cannot_be_read_falls_back_and_says_why(s):
+    s.raise_node(s.run("exceptions", {}).node.uid)
+    landed = s.set_time_grain("year")
+    assert landed.node.kind == BREAKDOWN
+    assert "Shown as a breakdown" in landed.message
+    assert actions(s)[-1] != J.BLOCKED          # the move itself was fine
+
+
+def test_a_distribution_point_is_not_a_member(s):
+    s.raise_node(s.run("distribution", {}).node.uid)
+    point = s.result().rows[0].key
+    menu = s.menu(s.node.uid, point)
+    assert menu.heading.startswith(point)
+    assert all(it.member is None for g in menu.groups for it in g)
+    assert s.activate(s.node.uid, point) is None
+    for verb, params in [("decompose", {"dimension": "channel"}),
+                         ("drill_down", {"dimension": "province"})]:
+        s.goto(s.graph.current)
+        landed = s.run(verb, params, member=point)
+        assert not s.result(landed.node).is_empty
+
+
+def test_explaining_a_trend_explains_a_point(s):
+    s.raise_node(s.run("trend", {"periods": 12}).node.uid)
+    latest = s.node.context.time.end
+    assert s.explain().context.time.end == latest
+    first = s.node.context.time.start
+    exp = s.explain(member=first)
+    assert (exp.context.time.start, exp.context.time.end) == (first, first)
+
+
+def test_a_trend_with_a_comparison_breaks_down_its_latest_period(s):
+    s.raise_node(s.run("trend", {"periods": 12}).node.uid)
+    s.set_comparison("mom")
+    landed = s.run("decompose", {"dimension": "channel"})
+    ctx = landed.node.context
+    assert ctx.time.length == 1 and ctx.comparison == "mom"
+
+
+@pytest.mark.parametrize("setup", ["trend", "total"])
+@pytest.mark.parametrize("lens, kind", [("Change", CHANGE),
+                                        ("Exception", EXCEPTIONS)])
+def test_change_and_exception_lenses_split_what_has_no_split(s, setup, lens,
+                                                             kind):
+    if setup == "trend":
+        s.raise_node(s.run("trend", {"periods": 12}).node.uid)
+    else:
+        s.run("drill_up", {})
+    landed = s.lens(lens)
+    assert landed.node.kind == kind
+    assert len(landed.node.context.grain) == 1
+    assert landed.node.context.time.length == 1
+
+
 def test_a_trend_is_a_timeseries_and_keeps_its_length_on_a_new_period(s):
     trend = s.lens("Trend").node
     assert trend.kind == TIMESERIES

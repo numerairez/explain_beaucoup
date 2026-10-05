@@ -77,6 +77,7 @@ export type VerbInfo = {
   member_scoped: boolean;
   placement: "replace" | "below";
   preserves_kind: boolean;
+  carries_change: boolean;
   hierarchy_scoped: boolean;
   advertises: boolean;
 };

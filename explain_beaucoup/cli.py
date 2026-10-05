@@ -96,6 +96,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     for i in issues:
         print("  " + _paint(str(i), COLOR.get(i.level, "")))
 
+    dash_errors = _check_dashboard(loaded)
+
     if not model.hierarchies:
         print("\n  " + _paint(
             "[NOTE   ] hierarchies: none declared - structural drill "
@@ -105,12 +107,46 @@ def cmd_check(args: argparse.Namespace) -> int:
     if errors:
         print(_paint(f"{len(errors)} error(s) — the model will not run.", RED))
         return 1
+    if dash_errors:
+        print(_paint(f"{dash_errors} dashboard tile(s) will not open — the "
+                     f"model itself is usable.", RED))
+        return 1
     print(_paint(f"OK — model is usable"
                  f"{f' ({len(warnings)} warning(s))' if warnings else ''}.",
                  BOLD))
     if args.sample:
         _sample(model, source)
     return 0
+
+
+def _check_dashboard(loaded) -> int:
+    """Replay every tile of the model's dashboard, if it has one. Returns how
+    many tiles failed."""
+    from .core import dashboard as dash
+    from .core.session import root_context
+    from .engine.engine import AnalyticalEngine
+
+    path = dash.path_for(loaded.path)
+    try:
+        board = dash.load(path)
+    except dash.DashboardError as exc:
+        print("  " + _paint(f"[ERROR  ] {exc}", RED))
+        return 1
+    if board is None:
+        return 0
+    print(f"\n{_paint('Dashboard', BOLD)} {path.name}  "
+          f"({board.title or 'untitled'}: {len(board.tiles)} tiles)")
+    engine = AnalyticalEngine(loaded.source, loaded.model)
+    try:
+        root, _ = root_context(loaded.model, engine)
+    except Exception:                                   # pragma: no cover
+        return 0            # the model's own errors were already reported
+    failed = 0
+    for level, where, message in dash.check(loaded.model, engine, board, root):
+        failed += level == "error"
+        print("  " + _paint(f"[{level.upper():7}] {where}: {message}",
+                            COLOR.get(level, "")))
+    return failed
 
 
 def _sample(model, source) -> None:

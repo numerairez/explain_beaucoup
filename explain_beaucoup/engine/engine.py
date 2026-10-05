@@ -23,7 +23,7 @@ from ..core.context import Context, TimeWindow, cell_key
 from ..core.operations import (BREAKDOWN, CHANGE, DISTRIBUTION, EXCEPTIONS,
                                MATRIX, TIMESERIES)
 from ..data.source import DataSource
-from ..semantic.specs import MetricSpec, SemanticModel
+from ..semantic.specs import MetricSpec, SemanticError, SemanticModel
 from .backend import N, PERIOD, Backend, Query, as_backend
 
 VALUE, NUM, DEN = "__value__", "__num__", "__den__"
@@ -127,6 +127,11 @@ def register_analysis(kind: str, *, title: Callable[[SemanticModel, Context], st
 def title_for(model: SemanticModel, ctx: Context, kind: str) -> str:
     a = ANALYSES.get(kind) or ANALYSES[BREAKDOWN]
     return a.title(model, ctx)
+
+
+# The key of the single row a scope total (`grain=()`) reads as. It is a mark,
+# so it can be selected, but it is the whole view rather than a member of it.
+TOTAL_KEY = "__total__"
 
 
 def normal_kind(model: SemanticModel, ctx: Context, kind: str) -> str:
@@ -303,7 +308,9 @@ def breakdown(engine: AnalyticalEngine, ctx: Context,
                              total, metric, additive,
                              _f(r[NUM]), _f(r[DEN])))
     elif len(cur):
-        rows.append(_row("__total__", "__total__", total, prior_total, total,
+        # The one bar of a scope total is labelled with the scope, not its key.
+        label = ctx.scope_label() if ctx.filters else "Total"
+        rows.append(_row(TOTAL_KEY, label, total, prior_total, total,
                          metric, additive, _f(cur[NUM].iloc[0]),
                          _f(cur[DEN].iloc[0])))
 
@@ -332,8 +339,8 @@ def breakdown(engine: AnalyticalEngine, ctx: Context,
 
 
 @register_analysis(CHANGE, title=lambda model, ctx:
-                   f"What moved {_metric_label(model, ctx)} - "
-                   f"{ctx.scope_label()}")
+                   f"What moved {_breakdown_title(model, ctx)}"
+                   + (f" - {ctx.scope_label()}" if ctx.filters else ""))
 def change(engine: AnalyticalEngine, ctx: Context) -> ResultHandle:
     return breakdown(engine, ctx, CHANGE)
 
@@ -447,6 +454,10 @@ def distribution(engine: AnalyticalEngine, ctx: Context) -> ResultHandle:
         axes=tuple(cell_dims))
 
 
+# A member needs this many past periods before it can be called unusual.
+MIN_BASELINE = 4
+
+
 @register_analysis(EXCEPTIONS, title=lambda model, ctx:
                    f"Exceptions - {ctx.scope_label()}")
 def exceptions(engine: AnalyticalEngine, ctx: Context,
@@ -464,10 +475,12 @@ def exceptions(engine: AnalyticalEngine, ctx: Context,
                           tg.add(ctx.time.start, grain, -1), grain)
     hg = engine.aggregate(ctx, hist_win, metric, (dim, model.time_column))
     rows: list[Row] = []
+    judged = 0
     for key, grp in hg.groupby("__k0__", observed=True):
         vals = grp[VALUE].dropna()
-        if len(vals) < 4:
+        if len(vals) < MIN_BASELINE:
             continue
+        judged += 1
         mean = float(vals.mean())
         std = float(vals.std(ddof=1)) or 0.0
         value = cur_map.get(str(key))
@@ -478,6 +491,13 @@ def exceptions(engine: AnalyticalEngine, ctx: Context,
                         (value - mean) / mean if mean else None, None,
                         extra=(("z", round(z, 2)), ("baseline", mean),
                                ("baseline_periods", len(vals)))))
+    if not judged:
+        # Said, rather than drawn as an empty chart that looks like "nothing
+        # is unusual" - the data cannot say either way.
+        raise SemanticError(
+            f"Exceptions need at least {MIN_BASELINE} earlier {grain}s of "
+            f"history per member, and there are not that many before "
+            f"{ctx.time.label}. Try a finer time grain.")
     rows.sort(key=lambda r: -abs(dict(r.extra).get("z", 0.0)))
     total, fact_rows = engine.total(ctx, ctx.time, metric)
     return ResultHandle(
@@ -493,7 +513,8 @@ def exceptions(engine: AnalyticalEngine, ctx: Context,
 @register_analysis(MATRIX, title=lambda model, ctx:
                    f"{_metric_label(model, ctx)} by "
                    f"{model.label_of(ctx.grain[0])} × "
-                   f"{model.label_of(ctx.grain[1])}")
+                   f"{model.label_of(ctx.grain[1])}"
+                   + (f" - {ctx.scope_label()}" if ctx.filters else ""))
 def matrix(engine: AnalyticalEngine, ctx: Context) -> ResultHandle:
     """The value at every (row, column) cell of a two-axis node.
 
